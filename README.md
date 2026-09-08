@@ -4,9 +4,9 @@
 
 Astriena is an OpenTelemetry-native observability platform built as a
 **Bring Your Own Storage (BYOS)** alternative to incumbent SaaS vendors. This
-repository holds the open-source core: `astriena-proxy`, a high-throughput dynamic
-tail-sampling proxy that filters redundant telemetry before it leaves your network and
-writes compressed OTel data directly into your own ClickHouse cluster.
+repository holds the open-source core — the `astriena` binary, a high-throughput
+dynamic tail-sampling proxy that filters redundant telemetry before it leaves your
+network and writes compressed OTel data directly into your own ClickHouse cluster.
 
 ## Why Astriena
 
