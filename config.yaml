@@ -1,0 +1,40 @@
+# Example Astriena configuration.
+#
+# Astriena speaks OTLP in and writes sampled traces to YOUR OWN ClickHouse (BYOS).
+# Migrate by pointing your existing OpenTelemetry Collector's OTLP exporter at
+# this endpoint — no rewrite required.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  astriena_sampler:
+    decision_wait: 5s
+    max_traces: 50000
+    policies:
+      # Keep 100% of traces with an error span.
+      - type: status_code
+        keep: ERROR
+      # Keep traces with any span slower than 200ms.
+      - type: latency
+        threshold_ms: 200
+  batch: {}
+
+exporters:
+  clickhouse:
+    # BYOS: your own cluster. Supplied via env so no secret lands in config.
+    dsn: ${env:ASTRIENA_CLICKHOUSE_DSN}
+    database: astriena
+    table: spans
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [astriena_sampler, batch]
+      exporters: [clickhouse]

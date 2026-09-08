@@ -12,15 +12,14 @@ Thumbs.db
 .env.*
 !.env.example
 *.local
+config.local.yaml
 
 # Logs
 *.log
 
-# Build / dependencies (placeholder until proxy language is chosen)
-node_modules/
-dist/
-build/
-target/
+# Go / OpenTelemetry Collector Builder output
+_build/
 bin/
-__pycache__/
-*.pyc
+dist/
+*.test
+*.out

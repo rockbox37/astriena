@@ -1,0 +1,35 @@
+# OpenTelemetry Collector Builder (ocb) manifest for the Astriena distribution.
+#
+# "A focused OpenTelemetry distribution with a sampling engine that uses a
+#  fraction of the memory of the stock processor — none of the plugin bloat."
+#
+# Build with:  make build   (installs the builder and runs it against this file)
+#
+# NOTE: the Collector module versions below are a starting point. Verify and bump
+# them to the current Collector release before the first build, and keep the
+# receiver / processor / provider (v0.x) and core (v1.x) versions in lockstep.
+dist:
+  name: astriena
+  description: A focused OpenTelemetry distribution with an efficient tail-sampling engine (BYOS to ClickHouse).
+  output_path: ./_build
+  version: 0.1.0
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.116.0
+
+processors:
+  # Reused, hardened plumbing:
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.116.0
+  # Astriena's own tail-sampling engine (the wedge):
+  - gomod: github.com/rockbox37/astriena/components/astrienasampler v0.1.0
+    path: ./components/astrienasampler
+
+exporters:
+  - gomod: github.com/rockbox37/astriena/components/clickhouseexporter v0.1.0
+    path: ./components/clickhouseexporter
+
+extensions: []
+
+providers:
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.22.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.22.0
