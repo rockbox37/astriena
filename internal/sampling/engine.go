@@ -89,6 +89,7 @@ type Config struct {
 //     under load (this is where the memory/throughput wedge is won or lost);
 //   - a time-ordered structure to force a decision once DecisionWait elapses;
 //   - MaxTraces enforcement with an eviction + drop metric.
+//
 // Benchmark this package against the stock tail_sampling processor before
 // optimizing — see docs/architecture.md.
 type Engine struct {

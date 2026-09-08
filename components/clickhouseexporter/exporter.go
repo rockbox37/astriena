@@ -35,7 +35,7 @@ func (e *chExporter) Capabilities() consumer.Capabilities {
 }
 
 func (e *chExporter) Start(context.Context, component.Host) error { return nil }
-func (e *chExporter) Shutdown(context.Context) error             { return e.w.Close() }
+func (e *chExporter) Shutdown(context.Context) error              { return e.w.Close() }
 
 // ConsumeTraces flattens sampled spans into rows and writes them to ClickHouse.
 func (e *chExporter) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
