@@ -1,0 +1,26 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs
+*.log
+
+# Build / dependencies (placeholder until proxy language is chosen)
+node_modules/
+dist/
+build/
+target/
+bin/
+__pycache__/
+*.pyc
