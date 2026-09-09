@@ -1,4 +1,8 @@
-# Astriena
+<p align="center">
+  <img src="docs/assets/astriena-icon-512.png" width="128" height="128" alt="Astriena constellation mark">
+</p>
+<h1 align="center">Astriena</h1>
+<p align="center"><em>of the stars</em></p>
 
 > **A focused OpenTelemetry distribution with a sampling engine that uses a
 > fraction of the memory of the stock processor — none of the plugin bloat.**
@@ -48,6 +52,29 @@ Early stage — scaffolding in place, core engine under construction. The pure
 sampling engine ([`internal/sampling`](internal/sampling)) and ClickHouse writer
 ([`internal/clickhouse`](internal/clickhouse)) are the growth areas; look for
 `TODO(core)` markers. Watch or star to follow along.
+
+## Visual language
+
+The mark is an original five-star asterism (a slightly irregular A of linked
+stars), not a catalogued constellation. Night-sky tokens used across the SVG
+assets in [`docs/assets/`](docs/assets/):
+
+| Token | Hex | Role |
+|---|---|---|
+| `bg` | `#0B1220` | Night sky |
+| `surface` | `#141C2E` | Raised panel / gradient peak `#1A2740` |
+| `star` | `#E8D5A3` | Star body and accent |
+| `star-core` | `#F7F1E1` | Bright star core |
+| `line` | `#C4B48A` | Asterism links |
+| `dim` | `#5C6B84` | Distant field stars |
+| `text` | `#E8EEF7` | Primary text on sky |
+| `text-muted` | `#9AA8BC` | Secondary text |
+
+Source of truth is the SVG. `astriena-mark.svg` is the app/avatar mark;
+`astriena-mark-16.svg` / `favicon.svg` are the 16px silhouette; `astriena-social.svg`
+is the typeset 1280×640 preview. Matching PNGs (`astriena-icon-512.png`,
+`astriena-social.png`) are for GitHub, which wants raster uploads. Org/repo
+avatar and Settings → Social preview still need a maintainer upload.
 
 ## License
 

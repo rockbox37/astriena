@@ -9,6 +9,8 @@ pinned released versions.
 ## [Unreleased]
 
 ### Added
+- Constellation branding: original five-star asterism mark and night-sky token
+  set in `docs/assets/`, wired into the README and docs headers (closes #9).
 - Project scaffolding: custom OpenTelemetry Collector distribution shape.
 - Pure, framework-free core: `internal/sampling` (tail-sampling engine with
   status-code and latency policies) and `internal/clickhouse` (BYOS writer).
