@@ -131,8 +131,7 @@ func (c *chInserter) InsertBatch(ctx context.Context, rows []clickhouse.Row) err
 		if err := batch.Append(
 			r.Timestamp, r.TraceID, r.SpanID, r.Name, r.StatusCode, r.DurationNS, attrs,
 		); err != nil {
-			_ = batch.Abort()
-			return fmt.Errorf("clickhouse: append row: %w", err)
+			return errors.Join(fmt.Errorf("clickhouse: append row: %w", err), batch.Abort())
 		}
 	}
 	if err := batch.Send(); err != nil {

@@ -135,6 +135,8 @@ func (w *Writer) Start(ctx context.Context) error {
 				}
 				w.inFlush.Add(1)
 				w.mu.Unlock()
+				// Writer owns retry (re-buffer). A ticker flush must not fail
+				// the process or surface to the Collector ingest path.
 				_ = w.flushAndDone(context.Background())
 			}
 		}
@@ -162,6 +164,8 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 		// ingest until the ticker (or forever when FlushInterval is unset).
 		w.inFlush.Add(1)
 		w.mu.Unlock()
+		// Writer owns retry: leftover stays in buf. Returning the flush
+		// error would make the Collector re-Consume and append the same rows.
 		_ = w.flushAndDone(ctx)
 		w.mu.Lock()
 		if w.closed {
@@ -182,8 +186,8 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 	}
 	w.mu.Unlock()
 	if ready {
-		// Writer owns retry: flush re-buffers on failure. Returning nil here
-		// keeps a Collector re-Consume from appending the same rows again.
+		// Writer owns retry: flush re-buffers on failure. Returning that
+		// error would make the Collector re-Consume and append the same rows.
 		_ = w.flushAndDone(ctx)
 	}
 	return nil

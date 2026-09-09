@@ -14,6 +14,8 @@ pinned released versions.
   succeeds, pdata snapshots are copied rather than moved, `Close`/`Shutdown`
   drain with a live context, and `quoteString` / ParseDSN no longer leak a
   DSN or allow attribute-key breakout in ALTER literals.
+- ClickHouse prepared-batch `Abort` errors on a failed append are joined
+  into the returned error instead of being discarded.
 
 ### Changed
 - Sampling engine hot path is no longer O(n²) in buffer size. `Consume` now
