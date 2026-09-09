@@ -8,6 +8,19 @@ pinned released versions.
 
 ## [Unreleased]
 
+### Changed
+- Sampling engine hot path is no longer O(n²) in buffer size. `Consume` now
+  re-evaluates only the traces a batch touched (policies are pure functions of a
+  trace's spans, so an untouched trace cannot change decision) instead of scanning
+  the whole buffer, and expiry walks a new arrival-ordered FIFO list — deadline
+  order, since all traces share one `DecisionWait` — popping only what is due
+  (O(k)) instead of ranging every buffered trace. A per-batch fill that could not
+  finish 200k traces in 120s now does 1M in ~2.9s. The background ticker does
+  expiry only (it can no longer touch the sink or fail), and traces are unlinked
+  in O(1) via a per-trace `*list.Element`. Cost: one extra allocation per new
+  trace (4 → 5 allocs/op). Covered by new regression tests
+  (`TestLateErrorSpanSamplesBufferedTrace`, `TestBufferIndexAndOrderStayConsistent`).
+
 ### Added
 - Project scaffolding: custom OpenTelemetry Collector distribution shape.
 - Pure, framework-free core: `internal/sampling` (tail-sampling engine with

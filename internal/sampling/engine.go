@@ -12,6 +12,7 @@
 package sampling
 
 import (
+	"container/list"
 	"context"
 	"sync"
 	"time"
@@ -54,6 +55,13 @@ type Trace struct {
 	Arrived time.Time
 
 	decision Decision
+
+	// elem is this trace's node in the engine's arrival-ordered list, held so it
+	// can be unlinked in O(1) when the trace is decided or expired.
+	elem *list.Element
+	// touchedGen marks the last Consume generation that added a span to this
+	// trace, so a single batch evaluates each touched trace exactly once.
+	touchedGen uint64
 }
 
 // Policy decides whether a (possibly partial) trace should be kept. Policies
@@ -92,20 +100,31 @@ type Config struct {
 //
 // A trace no policy chooses to keep stays Pending only until DecisionWait
 // elapses; then the engine forces the default decision — NotSampled — and drops
-// it (see expireLocked). Expiry runs inline on every Consume (cheap under load)
-// and, so buffered traces are still flushed when ingest goes quiet, on a
-// background ticker started by Start. This default-drop is what realizes the
-// ingestion reduction: redundant traces leave the buffer instead of piling up
-// until MaxTraces evicts new ones.
+// it (see expireLocked). Expiry runs inline on every Consume and, so buffered
+// traces are still flushed when ingest goes quiet, on a background ticker started
+// by Start. This default-drop is what realizes the ingestion reduction: redundant
+// traces leave the buffer instead of piling up until MaxTraces evicts new ones.
+//
+// Two structures keep the hot path off O(n) per batch:
+//   - traces indexes buffered traces by id for O(1) lookup on ingest.
+//   - order is a FIFO list of the same traces in arrival order. Because every
+//     trace shares one DecisionWait, arrival order is deadline order: expiry pops
+//     the front while it is due and stops at the first trace that is not — O(k)
+//     in the number actually expiring, not O(n) in the buffer. A trace decided
+//     early is unlinked in O(1) via the *list.Element it holds.
+//
+// Consume also re-evaluates only the traces the current batch touched, not the
+// whole buffer: policies are pure functions of a trace's spans, so a trace that
+// gained no span cannot change its decision. Together these make a stream of
+// batches O(total spans) rather than O(n^2) in buffer size.
 //
 // MaxTraces is enforced as a hard memory bound (new traces are dropped once the
-// cap is reached). TODO(core): the production hot path still needs a sharded /
-// lock-striped buffer so a single mutex is not the bottleneck under load (this is
-// where the memory/throughput wedge is won or lost), a time-ordered structure so
-// expiry does not scan every buffered trace, and smarter eviction than
-// drop-newest (e.g. evict the oldest still-Pending trace). Benchmark this package
-// against the stock tail_sampling processor before optimizing — see
-// docs/architecture.md.
+// cap is reached). TODO(core): what remains for the production hot path is a
+// sharded / lock-striped buffer so a single mutex is not the bottleneck under
+// load (this is where the throughput wedge is won or lost) and smarter eviction
+// than drop-newest at the cap (e.g. evict the oldest still-Pending trace, now
+// cheap to find at the front of order). Benchmark against the stock tail_sampling
+// processor before optimizing further — see docs/benchmarks.md.
 type Engine struct {
 	cfg  Config
 	sink Sink
@@ -115,8 +134,14 @@ type Engine struct {
 
 	mu         sync.Mutex
 	traces     map[TraceID]*Trace
+	order      *list.List // *Trace in arrival order; front is oldest (see above)
 	dropped    int64
 	notSampled int64
+
+	// gen counts Consume calls; touched collects the traces a single Consume
+	// added spans to, so evaluation touches each such trace once (see Consume).
+	gen     uint64
+	touched []*Trace
 
 	// stop/done coordinate the background expiry ticker (see Start/Shutdown).
 	stop chan struct{}
@@ -131,6 +156,7 @@ func NewEngine(cfg Config, sink Sink) *Engine {
 		sink:   sink,
 		now:    time.Now,
 		traces: make(map[TraceID]*Trace),
+		order:  list.New(),
 	}
 }
 
@@ -156,9 +182,10 @@ func (e *Engine) Start() {
 			case <-e.stop:
 				return
 			case <-t.C:
-				// TODO(core): a background flush error is currently swallowed;
-				// surface it once the engine has a logger/metrics handle.
-				_ = e.sweep(context.Background())
+				// Expiry only: without new spans no trace can newly match a
+				// policy, so the ticker never evaluates (and never touches the
+				// sink) — it just drops traces whose DecisionWait has elapsed.
+				e.expire()
 			}
 		}
 	}()
@@ -179,7 +206,10 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if err := e.evaluateLocked(ctx); err != nil {
+	// Drain: give every remaining trace a final policy pass (a full scan, but
+	// only once, at shutdown) so a Sampled one is still forwarded, then force the
+	// default NotSampled decision on whatever stays Pending.
+	if err := e.evaluateAllLocked(ctx); err != nil {
 		return err
 	}
 	e.expireLocked(e.now(), true)
@@ -190,6 +220,12 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Collect the traces this batch adds spans to. Only these can change decision
+	// (policies are pure functions of a trace's spans), so only these are
+	// evaluated below — the buffer at large is left untouched.
+	e.gen++
+	e.touched = e.touched[:0]
 
 	for _, s := range spans {
 		t, ok := e.traces[s.TraceID]
@@ -203,6 +239,9 @@ func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 			}
 			t = &Trace{ID: s.TraceID, Arrived: e.now()}
 			e.traces[s.TraceID] = t
+			// Link at the back: traces enter order oldest-first, which is also
+			// deadline order since they share one DecisionWait (see expireLocked).
+			t.elem = e.order.PushBack(t)
 		}
 		// Bound spans for a single trace: one runaway trace id must not grow
 		// without limit even though the trace-count cap is not reached.
@@ -211,8 +250,19 @@ func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 			continue
 		}
 		t.Spans = append(t.Spans, s)
+		if t.touchedGen != e.gen {
+			t.touchedGen = e.gen
+			e.touched = append(e.touched, t)
+		}
 	}
-	return e.sweepLocked(ctx)
+
+	for _, t := range e.touched {
+		if err := e.decideLocked(ctx, t); err != nil {
+			return err
+		}
+	}
+	e.expireLocked(e.now(), false)
+	return nil
 }
 
 // Dropped returns the number of spans dropped by a memory safeguard — either
@@ -238,62 +288,89 @@ func (e *Engine) NotSampled() int64 {
 	return e.notSampled
 }
 
-// sweep runs one evaluate+expire pass under the lock. The background ticker and
-// the deterministic tests drive expiry through it.
-func (e *Engine) sweep(ctx context.Context) error {
+// expire runs one expiry pass under the lock. The background ticker drives quiet
+// buffered traces to a decision through it; it never evaluates policies or
+// touches the sink, so it cannot fail.
+func (e *Engine) expire() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.sweepLocked(ctx)
+	e.expireLocked(e.now(), false)
 }
 
-func (e *Engine) sweepLocked(ctx context.Context) error {
-	if err := e.evaluateLocked(ctx); err != nil {
-		return err
+// removeLocked deletes a decided/expired trace from both the id index and the
+// arrival-ordered list (the latter in O(1) via the node the trace holds).
+func (e *Engine) removeLocked(t *Trace) {
+	delete(e.traces, t.ID)
+	if t.elem != nil {
+		e.order.Remove(t.elem)
+		t.elem = nil
 	}
-	e.expireLocked(e.now(), false)
+}
+
+// decideLocked applies the policies to one still-Pending trace. The first
+// non-Pending policy wins: the trace takes that decision, is forwarded when
+// Sampled, and is removed from the buffer. Returns any sink error.
+func (e *Engine) decideLocked(ctx context.Context, t *Trace) error {
+	if t.decision != DecisionPending {
+		return nil
+	}
+	for _, p := range e.cfg.Policies {
+		d := p.Evaluate(t)
+		if d == DecisionPending {
+			continue
+		}
+		t.decision = d
+		if d == DecisionSampled {
+			if err := e.sink.ConsumeSampled(ctx, t.Spans); err != nil {
+				return err
+			}
+		}
+		e.removeLocked(t)
+		return nil
+	}
 	return nil
 }
 
-// expireLocked forces the default NotSampled decision on every still-Pending
-// trace whose DecisionWait has elapsed, dropping it from the buffer. When force
-// is set, every remaining Pending trace is dropped regardless of deadline (used
-// by Shutdown to drain). With DecisionWait unset and force false, expiry is
-// disabled and traces persist until a policy decides them or MaxTraces evicts.
+// evaluateAllLocked runs decideLocked over every buffered trace. It is a full
+// O(n) scan and is used only on Shutdown to drain; the hot path evaluates only
+// the traces a batch touched (see Consume).
+func (e *Engine) evaluateAllLocked(ctx context.Context) error {
+	for _, t := range e.traces {
+		if err := e.decideLocked(ctx, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// expireLocked forces the default NotSampled decision on still-Pending traces
+// whose DecisionWait has elapsed, dropping them from the buffer. It walks the
+// arrival-ordered list from the front (oldest) and stops at the first trace not
+// yet due — because all traces share one DecisionWait, arrival order is deadline
+// order, so nothing past that point can be due either. When force is set, every
+// remaining trace is dropped regardless of deadline (used by Shutdown to drain).
+// With DecisionWait unset and force false, expiry is disabled and traces persist
+// until a policy decides them or MaxTraces evicts.
+//
+// This relies on now() being monotonic non-decreasing across Consume calls (true
+// for time.Now and for the forward-only clocks the tests inject); a clock that
+// ran backwards could leave a due trace behind the stop point until the next
+// pass.
 func (e *Engine) expireLocked(now time.Time, force bool) {
 	if e.cfg.DecisionWait <= 0 && !force {
 		return
 	}
-	for id, t := range e.traces {
-		if t.decision != DecisionPending {
-			continue
+	for {
+		front := e.order.Front()
+		if front == nil {
+			return
 		}
-		if force || !now.Before(t.Arrived.Add(e.cfg.DecisionWait)) {
-			t.decision = DecisionNotSampled
-			e.notSampled++
-			delete(e.traces, id)
+		t := front.Value.(*Trace)
+		if !force && now.Before(t.Arrived.Add(e.cfg.DecisionWait)) {
+			return
 		}
+		t.decision = DecisionNotSampled
+		e.notSampled++
+		e.removeLocked(t)
 	}
-}
-
-func (e *Engine) evaluateLocked(ctx context.Context) error {
-	for id, t := range e.traces {
-		if t.decision != DecisionPending {
-			continue
-		}
-		for _, p := range e.cfg.Policies {
-			d := p.Evaluate(t)
-			if d == DecisionPending {
-				continue
-			}
-			t.decision = d
-			if d == DecisionSampled {
-				if err := e.sink.ConsumeSampled(ctx, t.Spans); err != nil {
-					return err
-				}
-			}
-			delete(e.traces, id)
-			break
-		}
-	}
-	return nil
 }
