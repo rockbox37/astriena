@@ -9,15 +9,42 @@ import zlib
 from pathlib import Path
 
 BG = (0x0B, 0x12, 0x20)
-SURFACE = (0x1A, 0x27, 0x40)
+SURFACE = (0x14, 0x1C, 0x2E)
 STAR = (0xE8, 0xD5, 0xA3)
 CORE = (0xF7, 0xF1, 0xE1)
 LINE = (0xC4, 0xB4, 0x8A)
 DIM = (0x5C, 0x6B, 0x84)
 
-STARS = [(32, 11, 2.05), (19, 26, 1.55), (45, 24, 1.55), (15, 50, 1.35), (50, 51, 1.35)]
-LINES = [((32, 11), (19, 26)), ((19, 26), (15, 50)), ((32, 11), (45, 24)), ((45, 24), (50, 51)), ((19, 26), (45, 24))]
-FIELD = [(10, 16, 0.55), (56, 12, 0.45), (58, 42, 0.5), (22, 58, 0.4), (40, 7, 0.45)]
+# Keep these coordinates in sync with astriena-mark.svg's 64-unit viewBox.
+STARS = [
+    (18, 16, 2.25), (39, 31, 1.95), (25, 45, 1.72), (54, 27, 1.52),
+    (43, 12, 1.34), (14, 34, 1.18), (31, 19, 1.03), (18, 54, .94),
+    (9, 21, .82), (48, 46, .76), (34, 42, .66), (52, 16, .58),
+]
+LINES = [
+    ((9, 21), (18, 16)), ((18, 16), (31, 19)), ((31, 19), (43, 12)),
+    ((31, 19), (39, 31)), ((39, 31), (54, 27)),
+    ((18, 16), (14, 34)), ((14, 34), (25, 45)), ((25, 45), (18, 54)),
+]
+FIELD = [
+    (6, 9, .28), (14, 6, .38), (25, 8, .24), (36, 5, .31),
+    (49, 7, .25), (58, 12, .36), (4, 26, .23), (8, 39, .34),
+    (5, 51, .25), (13, 58, .30), (29, 58, .24), (41, 60, .33),
+    (55, 56, .27), (60, 45, .35), (58, 35, .22), (61, 22, .29),
+    (12, 27, .22), (22, 28, .30), (34, 27, .21), (47, 20, .24),
+    (50, 38, .32), (44, 50, .22), (31, 51, .27), (11, 46, .20),
+    (27, 14, .19), (39, 38, .24), (54, 15, .18), (35, 56, .18),
+]
+
+STARS_16 = [
+    (4.6, 4, 1.18), (9.8, 7.8, 1.02), (6.2, 11.3, .92),
+    (13.4, 6.8, .78), (10.8, 3, .67), (3.6, 8.5, .62),
+    (12, 12.5, .48), (2.6, 5.2, .45),
+]
+LINES_16 = [
+    ((2.6, 5.2), (4.6, 4)), ((4.6, 4), (7.8, 4.8)),
+    ((9.8, 7.8), (13.4, 6.8)), ((3.6, 8.5), (6.2, 11.3)),
+]
 
 
 def lerp(a: int, b: int, t: float) -> int:
@@ -87,16 +114,21 @@ class Canvas:
                 if cov:
                     self.set(x, y, color, a * cov)
 
-    def line(self, x0: float, y0: float, x1: float, y1: float, width: float, color: tuple[int, int, int]) -> None:
+    def line(
+        self, x0: float, y0: float, x1: float, y1: float, width: float,
+        color: tuple[int, int, int], alpha: float = .22,
+    ) -> None:
         steps = max(2, int(math.hypot(x1 - x0, y1 - y0) * 2))
-        r = max(0.6, width / 2.0)
+        r = max(.35, width / 2.0)
         for i in range(steps + 1):
             t = i / steps
-            self.circle(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, r, color, 1.0)
+            self.circle(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, r, color, alpha)
 
     def star(self, cx: float, cy: float, r: float) -> None:
+        if r >= 1.3:
+            self.circle(cx, cy, r * 2.1, STAR, .08)
         self.circle(cx, cy, r, STAR, 1.0)
-        self.circle(cx, cy, max(0.6, r * 0.32), CORE, 1.0)
+        self.circle(cx, cy, max(.34, r * .30), CORE, 1.0)
 
 
 def png(canvas: Canvas, path: Path) -> None:
@@ -115,21 +147,42 @@ def png(canvas: Canvas, path: Path) -> None:
     )
 
 
-def draw_asterism(c: Canvas, ox: float, oy: float, scale: float, line_w: float) -> None:
+def draw_asterism(
+    c: Canvas, ox: float, oy: float, scale: float, line_w: float,
+    line_alpha: float = .22,
+) -> None:
     for (x0, y0), (x1, y1) in LINES:
-        c.line(ox + x0 * scale, oy + y0 * scale, ox + x1 * scale, oy + y1 * scale, line_w, LINE)
+        c.line(
+            ox + x0 * scale, oy + y0 * scale,
+            ox + x1 * scale, oy + y1 * scale,
+            line_w, LINE, line_alpha,
+        )
     for x, y, r in STARS:
         c.star(ox + x * scale, oy + y * scale, r * scale)
 
 
 def render_mark(size: int, path: Path) -> None:
     c = Canvas(size, size, BG)
-    c.fill_radial(size * 0.38, size * 0.28, size * 0.78, SURFACE, BG)
+    c.fill_radial(size * .34, size * .27, size * .82, SURFACE, BG)
     c.rounded_rect_mask(size * 14 / 64)
     scale = size / 64.0
     for x, y, r in FIELD:
-        c.circle(x * scale, y * scale, max(0.8, r * scale), DIM, 1.0)
-    draw_asterism(c, 0, 0, scale, 1.7 * scale)
+        if size <= 64 and r < .24:
+            continue
+        c.circle(x * scale, y * scale, max(.55, r * scale), DIM, .72)
+    draw_asterism(c, 0, 0, scale, .36 * scale)
+    png(c, path)
+
+
+def render_mark_16(path: Path) -> None:
+    c = Canvas(16, 16, BG)
+    c.rounded_rect_mask(3.5)
+    for (x0, y0), (x1, y1) in LINES_16:
+        c.line(x0, y0, x1, y1, .58, LINE, .38)
+    for x, y, r in STARS_16:
+        c.circle(x, y, r, STAR)
+    c.circle(4.6, 4, .35, CORE)
+    c.circle(9.8, 7.8, .30, CORE)
     png(c, path)
 
 
@@ -138,15 +191,17 @@ def render_social(path: Path) -> None:
     c = Canvas(w, h, BG)
     c.fill_radial(w * 0.32, h * 0.40, w * 0.80, SURFACE, BG)
     field = [
-        (80, 70, 1.2), (160, 140, 0.9), (240, 48, 1.1), (420, 90, 0.8),
-        (980, 70, 1.2), (1100, 120, 0.9), (1180, 200, 1.1), (1040, 520, 1.0),
-        (200, 540, 1.1), (60, 400, 0.8), (720, 80, 0.7), (860, 560, 0.9),
-        (1240, 400, 0.8), (500, 580, 0.7),
+        (72, 64, 1.1), (148, 128, .8), (228, 42, 1), (400, 86, .7),
+        (968, 62, 1.1), (1092, 118, .85), (1176, 196, 1), (1032, 516, .9),
+        (188, 536, 1), (54, 392, .75), (708, 74, .65), (852, 552, .85),
+        (1232, 388, .75), (492, 576, .65), (620, 40, .7), (780, 520, .8),
+        (1140, 48, .6), (320, 600, .7), (40, 220, .65), (1260, 280, .7),
+        (880, 96, .55), (560, 600, .6), (980, 300, .7), (160, 300, .5),
     ]
     for x, y, r in field:
         c.circle(x, y, r, DIM, 1.0)
     scale = 7.2
-    draw_asterism(c, 640 - 32 * scale, 320 - 31 * scale, scale, 1.7 * scale)
+    draw_asterism(c, 640 - 32 * scale, 320 - 31 * scale, scale, .36 * scale)
     png(c, path)
 
 
@@ -154,6 +209,7 @@ def main() -> None:
     here = Path(__file__).resolve().parent
     render_mark(512, here / "astriena-icon-512.png")
     render_mark(64, here / "astriena-icon-64.png")
+    render_mark_16(here / "astriena-icon-16.png")
     render_social(here / "astriena-social.png")
 
 

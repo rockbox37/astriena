@@ -55,8 +55,9 @@ sampling engine ([`internal/sampling`](internal/sampling)) and ClickHouse writer
 
 ## Visual language
 
-The mark is an original five-star asterism (a slightly irregular A of linked
-stars), not a catalogued constellation. Night-sky tokens used across the SVG
+The mark is an original night-sky field: mixed-magnitude stars with faint,
+broken chart lines. It reads as sky and constellation before any letterform
+and is not a catalogued constellation. Night-sky tokens used across the SVG
 assets in [`docs/assets/`](docs/assets/):
 
 | Token | Hex | Role |
@@ -73,8 +74,9 @@ assets in [`docs/assets/`](docs/assets/):
 Source of truth is the SVG. `astriena-mark.svg` is the app/avatar mark;
 `astriena-mark-16.svg` / `favicon.svg` are the 16px silhouette; `astriena-social.svg`
 is the typeset 1280×640 preview. Matching PNGs (`astriena-icon-512.png`,
-`astriena-social.png`) are for GitHub, which wants raster uploads. Org/repo
-avatar and Settings → Social preview still need a maintainer upload.
+`astriena-icon-64.png`, `astriena-icon-16.png`, `astriena-social.png`) are for
+GitHub, which wants raster uploads. Org/repo avatar and Settings → Social
+preview still need a maintainer upload.
 
 ## License
 

@@ -8,6 +8,11 @@ pinned released versions.
 
 ## [Unreleased]
 
+### Changed
+- Redrew the constellation mark as an irregular, mixed-magnitude night sky with
+  faint broken chart lines; the original five-star A was too dominant
+  (follow-up to #9).
+
 ### Fixed
 - Keep-worthy traces and accepted ClickHouse rows survive sink errors and
   cancelled Collector shutdown: sampled traces stay held until forward
@@ -33,7 +38,7 @@ pinned released versions.
   (`TestLateErrorSpanSamplesBufferedTrace`, `TestBufferIndexAndOrderStayConsistent`).
 
 ### Added
-- Constellation branding: original five-star asterism mark and night-sky token
+- Constellation branding: original asterism mark and night-sky token
   set in `docs/assets/`, wired into the README and docs headers (closes #9).
 - Project scaffolding: custom OpenTelemetry Collector distribution shape.
 - Pure, framework-free core: `internal/sampling` (tail-sampling engine with
