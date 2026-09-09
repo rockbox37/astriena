@@ -19,13 +19,17 @@ type chExporter struct {
 }
 
 func newExporter(_ context.Context, _ exporter.Settings, cfg *Config) (exporter.Traces, error) {
+	ins, err := newInserter(cfg)
+	if err != nil {
+		return nil, err
+	}
 	w, err := clickhouse.NewWriter(clickhouse.Config{
 		DSN:           string(cfg.DSN),
 		Database:      cfg.Database,
 		Table:         cfg.Table,
 		BatchSize:     cfg.BatchSize,
 		FlushInterval: cfg.FlushInterval,
-	})
+	}, ins)
 	if err != nil {
 		return nil, err
 	}
@@ -36,8 +40,12 @@ func (e *chExporter) Capabilities() consumer.Capabilities {
 	return consumer.Capabilities{MutatesData: false}
 }
 
-func (e *chExporter) Start(context.Context, component.Host) error { return nil }
-func (e *chExporter) Shutdown(context.Context) error              { return e.w.Close() }
+// Start ensures the ClickHouse schema exists and begins the writer's flush loop.
+func (e *chExporter) Start(ctx context.Context, _ component.Host) error {
+	return e.w.Start(ctx)
+}
+
+func (e *chExporter) Shutdown(context.Context) error { return e.w.Close() }
 
 // ConsumeTraces flattens sampled spans into rows and writes them to ClickHouse.
 func (e *chExporter) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {

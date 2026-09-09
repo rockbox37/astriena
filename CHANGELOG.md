@@ -22,6 +22,15 @@ pinned released versions.
   evicts new traces. This is the path that realizes the ingestion reduction.
   Exposed via `Engine.Start`/`Shutdown` (wired to the processor lifecycle) and a
   `NotSampled()` counter distinct from the memory-safeguard `Dropped()` count.
+- ClickHouse BYOS write path. `internal/clickhouse` now owns the real batching
+  and auto-schema logic behind an `Inserter` port — size/interval/Close-triggered
+  flushes, new-attribute-key diffing, and re-buffer-on-failure — kept pure and
+  unit-tested offline with a fake driver. The clickhouse-go/v2 binding lives in
+  the `clickhouseexporter` adapter (`driver.go`): ZSTD-compressed prepared-batch
+  inserts, base-schema creation, and per-attribute sparse columns
+  (`DEFAULT attributes['k']`) with bloom-filter data-skipping indexes. The root
+  module stays dependency-free so the pure core still builds offline. Exporter
+  `Validate` now requires a DSN and rejects negative batch settings.
 - `builder-config.yaml` (ocb manifest) pinned to the OpenTelemetry Collector
   `v0.160.0` / `v1.66.0` release line; `make build` produces a runnable
   `./_build/astriena`.

@@ -1,6 +1,7 @@
 package clickhouseexporter
 
 import (
+	"errors"
 	"time"
 
 	"go.opentelemetry.io/collector/config/configopaque"
@@ -23,6 +24,14 @@ type Config struct {
 
 // Validate checks the configuration.
 func (c *Config) Validate() error {
-	// TODO(core): require DSN, sanity-check batch settings.
+	if c.DSN == "" {
+		return errors.New("clickhouse: dsn is required (BYOS: point it at your own cluster)")
+	}
+	if c.BatchSize < 0 {
+		return errors.New("clickhouse: batch_size must not be negative")
+	}
+	if c.FlushInterval < 0 {
+		return errors.New("clickhouse: flush_interval must not be negative")
+	}
 	return nil
 }
