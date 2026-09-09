@@ -31,8 +31,14 @@ func (p *samplerProcessor) Capabilities() consumer.Capabilities {
 	return consumer.Capabilities{MutatesData: false}
 }
 
-func (p *samplerProcessor) Start(context.Context, component.Host) error { return nil }
-func (p *samplerProcessor) Shutdown(context.Context) error              { return nil }
+func (p *samplerProcessor) Start(context.Context, component.Host) error {
+	p.engine.Start()
+	return nil
+}
+
+func (p *samplerProcessor) Shutdown(ctx context.Context) error {
+	return p.engine.Shutdown(ctx)
+}
 
 // ConsumeTraces translates incoming pdata into engine spans and feeds the engine.
 func (p *samplerProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
@@ -147,6 +153,10 @@ func toEngineSpans(td ptrace.Traces) []*sampling.Span {
 // fromEngineSpans reassembles OTLP traces from the per-trace snapshots carried by
 // sampled spans. Non-carrier spans (Raw == nil) are already represented in their
 // trace's carrier snapshot, so they are skipped.
+//
+// Snapshots are copied, not moved: a sink error must leave Raw intact so a
+// retry can forward the same spans. MoveAndAppendTo would empty the carrier,
+// making the next ConsumeSampled see SpanCount 0 and report success.
 func fromEngineSpans(spans []*sampling.Span) ptrace.Traces {
 	out := ptrace.NewTraces()
 	for _, s := range spans {
@@ -154,7 +164,10 @@ func fromEngineSpans(spans []*sampling.Span) ptrace.Traces {
 		if !ok {
 			continue
 		}
-		snap.ResourceSpans().MoveAndAppendTo(out.ResourceSpans())
+		rss := snap.ResourceSpans()
+		for i := 0; i < rss.Len(); i++ {
+			rss.At(i).CopyTo(out.ResourceSpans().AppendEmpty())
+		}
 	}
 	return out
 }

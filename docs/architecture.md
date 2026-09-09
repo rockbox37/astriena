@@ -46,6 +46,15 @@ Collector or OTLP types**:
 The Collector components are **thin adapters**: they translate `pdata` <-> the
 engine's domain types and own no business logic.
 
+The ClickHouse write path keeps this rule even though it needs a network driver:
+`internal/clickhouse` holds the batching and auto-schema *logic* behind an
+`Inserter` port and imports no driver, so it stays offline-buildable and
+unit-testable with a fake. The real clickhouse-go/v2 binding (compressed
+prepared-batch inserts, base-schema creation, and sparse per-attribute columns
+with bloom-filter indexes) lives in the `clickhouseexporter` adapter and is
+injected into the pure `Writer`. Keeping the driver in the adapter module is what
+preserves the root module's zero-heavy-deps invariant below.
+
 ```
   OTLP in ──▶ [otlpreceiver] ──▶ [astriena_sampler adapter] ──▶ [batch] ──▶ [clickhouse adapter] ──▶ ClickHouse (BYOS)
                                         │                                          │
@@ -56,7 +65,8 @@ engine's domain types and own no business logic.
 Keeping the core pure is deliberate: it lets us swap the surrounding framework,
 extract a standalone binary, or reimplement the hot path in another language
 without rewriting the sampling logic — and it lets us benchmark the engine in
-isolation.
+isolation (see [`benchmarks.md`](benchmarks.md), which establishes the baseline
+the memory/reduction claims rest on before any hot-path optimization).
 
 ## Deferred: a possible Rust hot path
 

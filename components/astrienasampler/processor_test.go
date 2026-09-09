@@ -69,6 +69,26 @@ func TestConsumeTraces_KeepsErrorDefersOK(t *testing.T) {
 	}
 }
 
+func TestFromEngineSpansPreservesRawOnCopy(t *testing.T) {
+	spans := toEngineSpans(makeTrace([16]byte{0x01}, ptrace.StatusCodeError, "op"))
+	if len(spans) != 1 {
+		t.Fatalf("want 1 span, got %d", len(spans))
+	}
+	first := fromEngineSpans(spans)
+	if first.SpanCount() != 1 {
+		t.Fatalf("first fromEngineSpans: SpanCount=%d, want 1", first.SpanCount())
+	}
+	// A sink-error retry must see the same snapshot, not an emptied carrier.
+	second := fromEngineSpans(spans)
+	if second.SpanCount() != 1 {
+		t.Fatalf("retry fromEngineSpans: SpanCount=%d, want 1 (Raw must survive copy)", second.SpanCount())
+	}
+	snap, ok := spans[0].Raw.(ptrace.Traces)
+	if !ok || snap.SpanCount() != 1 {
+		t.Fatalf("carrier Raw emptied after fromEngineSpans")
+	}
+}
+
 func TestToEngineSpans_Fields(t *testing.T) {
 	spans := toEngineSpans(makeTrace([16]byte{0x01}, ptrace.StatusCodeError, "op"))
 	if len(spans) != 1 {
