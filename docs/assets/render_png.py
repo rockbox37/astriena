@@ -116,7 +116,7 @@ class Canvas:
 
     def line(
         self, x0: float, y0: float, x1: float, y1: float, width: float,
-        color: tuple[int, int, int], alpha: float = .22,
+        color: tuple[int, int, int], alpha: float = .07,
     ) -> None:
         steps = max(2, int(math.hypot(x1 - x0, y1 - y0) * 2))
         r = max(.35, width / 2.0)
@@ -126,7 +126,7 @@ class Canvas:
 
     def star(self, cx: float, cy: float, r: float) -> None:
         if r >= 1.3:
-            self.circle(cx, cy, r * 2.1, STAR, .08)
+            self.circle(cx, cy, r * 2.1, STAR, .03)
         self.circle(cx, cy, r, STAR, 1.0)
         self.circle(cx, cy, max(.34, r * .30), CORE, 1.0)
 
@@ -149,7 +149,7 @@ def png(canvas: Canvas, path: Path) -> None:
 
 def draw_asterism(
     c: Canvas, ox: float, oy: float, scale: float, line_w: float,
-    line_alpha: float = .22,
+    line_alpha: float = .07,
 ) -> None:
     for (x0, y0), (x1, y1) in LINES:
         c.line(
@@ -170,7 +170,7 @@ def render_mark(size: int, path: Path) -> None:
         if size <= 64 and r < .24:
             continue
         c.circle(x * scale, y * scale, max(.55, r * scale), DIM, .72)
-    draw_asterism(c, 0, 0, scale, .36 * scale)
+    draw_asterism(c, 0, 0, scale, .28 * scale)
     png(c, path)
 
 
@@ -178,7 +178,7 @@ def render_mark_16(path: Path) -> None:
     c = Canvas(16, 16, BG)
     c.rounded_rect_mask(3.5)
     for (x0, y0), (x1, y1) in LINES_16:
-        c.line(x0, y0, x1, y1, .58, LINE, .38)
+        c.line(x0, y0, x1, y1, .45, LINE, .10)
     for x, y, r in STARS_16:
         c.circle(x, y, r, STAR)
     c.circle(4.6, 4, .35, CORE)
@@ -201,7 +201,7 @@ def render_social(path: Path) -> None:
     for x, y, r in field:
         c.circle(x, y, r, DIM, 1.0)
     scale = 7.2
-    draw_asterism(c, 640 - 32 * scale, 320 - 31 * scale, scale, .36 * scale)
+    draw_asterism(c, 640 - 32 * scale, 320 - 31 * scale, scale, .28 * scale)
     png(c, path)
 
 

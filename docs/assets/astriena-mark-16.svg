@@ -2,7 +2,7 @@
   <title id="title">Astriena</title>
   <desc id="desc">A tiny irregular star field with faint chart links.</desc>
   <rect width="16" height="16" rx="3.5" fill="#0B1220"/>
-  <g fill="none" stroke="#C4B48A" stroke-width=".58" stroke-opacity=".38" stroke-linecap="round">
+  <g fill="none" stroke="#C4B48A" stroke-width=".45" stroke-opacity=".10" stroke-linecap="round">
     <path d="M2.6 5.2 L4.6 4 L7.8 4.8"/>
     <path d="M9.8 7.8 L13.4 6.8"/>
     <path d="M3.6 8.5 L6.2 11.3"/>

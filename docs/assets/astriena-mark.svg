@@ -28,7 +28,7 @@
   </g>
 
   <!-- Broken, low-contrast chart lines: a loose branching path, not a glyph. -->
-  <g fill="none" stroke="#C4B48A" stroke-width=".36" stroke-opacity=".22"
+  <g fill="none" stroke="#C4B48A" stroke-width=".28" stroke-opacity=".07"
      stroke-linecap="round" stroke-linejoin="round">
     <path d="M9 21 L18 16 L31 19 L43 12"/>
     <path d="M31 19 L39 31 L54 27"/>
