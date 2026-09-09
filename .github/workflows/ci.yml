@@ -32,6 +32,16 @@ jobs:
       - run: go -C components/${{ matrix.module }} build ./...
       - run: go -C components/${{ matrix.module }} test ./...
 
+  h2h:
+    name: head-to-head bench module (build, short test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go -C bench test -short ./...
+
   distro:
     name: full distribution (ocb build)
     runs-on: ubuntu-latest

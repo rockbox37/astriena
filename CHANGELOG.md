@@ -67,7 +67,14 @@ pinned released versions.
   wedge claims rest on: the realized drop rate (**79.99%** at a 20% keep fraction,
   proving the "~80% ingestion reduction" through the real policy + `DecisionWait`
   path) and per-trace buffer bookkeeping (~120–180 heap B/trace). Methodology,
-  results, and the still-open head-to-head against the stock `tail_sampling`
-  processor are in `docs/benchmarks.md`. Writing them surfaced the O(n²)
-  buffer-scan since fixed (see Changed above).
+  results, and the head-to-head against the stock `tail_sampling` processor
+  are in `docs/benchmarks.md`. Writing them surfaced the O(n²) buffer-scan
+  since fixed (see Changed above).
+- Head-to-head benchmark module (`bench/`, `make bench-h2h`) comparing
+  `astriena_sampler` to contrib `tailsamplingprocessor` v0.160.0 on the same
+  generated `ptrace.Traces` and keep policy. At 20 000 in-flight traces,
+  adapter-level heap is a tie (~3400 B/trace, ratio ~1.00×); ingest
+  `ConsumeTraces` is ~2.25× faster on Astriena. The "fraction of the memory"
+  claim is not supported at the processor boundary — the adapter's pdata
+  snapshot dominates, and isolation's ~120–180 B/trace is ~5% of that figure.
 - `docs/architecture.md`.

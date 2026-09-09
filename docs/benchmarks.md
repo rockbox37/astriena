@@ -19,6 +19,9 @@ that must exist **before** the hot-path optimizations in the `TODO(core)` note i
 make bench
 # or, to vary the sample size (memory figures stabilize at large N):
 go test ./internal/sampling/ -run '^$' -bench . -benchmem -benchtime=200000x
+
+# adapter-level comparison vs stock tail_sampling (separate module; needs network once):
+make bench-h2h
 ```
 
 The benchmarks live in
@@ -96,26 +99,108 @@ unlinking and O(k) expiry. What the hot-path `TODO(core)` still leaves open is a
 sharded/lock-striped buffer (mutex contention) and smarter eviction than
 drop-newest at the `MaxTraces` cap.
 
-## Next milestone: head-to-head vs the stock `tail_sampling` processor
+## Head-to-head vs the stock `tail_sampling` processor
 
-The numbers above are Astriena's **own** baseline. To make the "fraction of the
-memory" claim a *ratio*, the same workload must run through the stock
-`tailsamplingprocessor` from opentelemetry-collector-contrib and be measured the
-same way. That comparison cannot live in this module: the stock processor needs
-the Collector runtime and `pdata`, which the root module deliberately does not
-depend on (that dependency-freedom is what keeps this engine benchmarkable in the
-first place).
+The isolation numbers above are Astriena's **own** engine baseline. The
+"fraction of the memory" claim is a *ratio*, so the same workload has to run
+through the stock `tailsamplingprocessor` (opentelemetry-collector-contrib
+v0.160.0, the Collector line this distro pins) and be measured the same way.
 
-Planned shape:
+That comparison cannot live in the root module: the stock processor needs the
+Collector runtime and `pdata`, which the root module deliberately does not
+depend on. It lives in [`bench/`](../bench/) — its own `go.mod`, importing both
+contrib `tailsamplingprocessor` and Astriena's `astriena_sampler` adapter.
 
-- A separate benchmark module (e.g. `bench/` with its own `go.mod`, or under
-  `components/`) that imports both the contrib `tailsamplingprocessor` and
-  Astriena's `astriena_sampler` adapter.
-- Feed both the *same* generated `ptrace.Traces` batches (port `genBatches` to
-  emit pdata) under an identical keep policy set.
-- Measure steady-state `HeapInuse` at a fixed in-flight trace count, plus
-  allocs/op and throughput, for both — reporting the **ratio**.
+### Running them
 
-Until that lands, this page proves the drop-rate claim outright and establishes
-Astriena's absolute memory/throughput baseline; the memory *comparison* is
-explicitly still open.
+```sh
+make test-bench          # cheap verification (skips the multi-second DecisionWait test)
+make bench-h2h           # full comparison: -benchtime=20000x
+# or:
+go test -C bench -short ./...
+go test -C bench -run '^$' -bench . -benchmem -benchtime=20000x
+```
+
+pdata copies make 200 000 traces heavier than the isolation engine bench; **20 000**
+is the documented comparison size. Larger N (e.g. `-benchtime=50000x`) is fine
+if you want a quieter heap sample.
+
+### Workload and policy (identical on both sides)
+
+Port of `genBatches`: 4 spans/trace, 6 attributes/span, 20% keep-worthy
+(`ERROR` or duration ≥ 200 ms). Keep policy set:
+
+| Astriena `astriena_sampler` | Stock `tail_sampling` |
+|---|---|
+| `status_code` keep=`ERROR` | `status_code` `status_codes: [ERROR]` |
+| `latency` `threshold_ms=200` | `latency` `threshold_ms=200` |
+
+Stock is configured with `sample_on_first_match: true` and
+`sampling_strategy: span-ingest` so it evaluates on the event loop as batches
+arrive — the closest match to Astriena's ingest-time policy pass. The stock
+default (`trace-complete`) only decides on a 1 s ticker and would make a keep
+check wait seconds and a memory fill race the clock.
+
+`TestPolicyParity` asserts both processors keep the same keep-worthy traces
+and do not forward healthy ones inside `DecisionWait`. `TestDropAfterWait`
+(skipped under `-short`) waits out `DecisionWait` and checks healthy traces
+are dropped, not forwarded.
+
+### What is measured
+
+**`BenchmarkBufferBytes/{astriena,stock}`** — N pending traces (`keepFrac=0`,
+`DecisionWait=30s` so nothing expires during the fill). The generated pdata is
+allocated *before* the first heap sample, so it cancels out of the delta; what
+remains is what each processor copied and indexed. Stock `ConsumeTraces` is
+async (copy + `workChan`); the bench drains the event loop before the second
+heap sample. Reports `heapB/trace`. The **ratio** is stock ÷ Astriena.
+
+**`BenchmarkConsume/{astriena,stock}`** — ingest path: ns/op, B/op, allocs/op
+on the same cycling pdata pool with unique per-iteration trace ids and a 10 000
+in-flight cap (eviction bounds the buffer). Stock's number includes the
+ResourceSpans copy plus enqueue (and backpressure once `workChan` fills);
+Astriena's is a synchronous translate + `Engine.Consume`. They are the same
+public `ConsumeTraces` call, not the same internal work.
+
+This is the **adapter** boundary, not the isolation engine: both sides hold
+span payloads. Isolation's ~120–180 B/trace deliberately excluded those
+payloads; they dominate here.
+
+### Results (adapter-level)
+
+Apple M4, `go test -C bench -benchtime=20000x`. Reproduce with `make bench-h2h`.
+Absolute numbers are hardware-dependent — the ratios and the shape are the point.
+
+| Benchmark | Processor | Metric | Value |
+|---|---|---|---|
+| `BenchmarkBufferBytes` | Astriena | **heap B/trace** | **~3409** |
+| | stock `tail_sampling` | **heap B/trace** | **~3391** |
+| | | **ratio (stock / Astriena)** | **~1.00×** |
+| `BenchmarkConsume` | Astriena | throughput | ~2061 ns/op, 3326 B/op, 52 allocs/op |
+| | stock `tail_sampling` | throughput | ~4636 ns/op, 4915 B/op, 82 allocs/op |
+| | | **ingest latency ratio (stock / Astriena)** | **~2.25×** |
+
+### What the ratio means (and does not)
+
+At the processor boundary, in-flight heap is a **tie**. The README / architecture
+claim of "a fraction of the memory of the stock processor" is **not supported**
+by this run: Astriena's adapter holds a domain `Span` *and* a per-trace pdata
+snapshot (`toEngineSpans`), and that dual representation lands at essentially
+the same `HeapInuse` as stock's own copies + `idToTrace` map.
+
+The isolation engine bookkeeping (~120–180 B/trace) is ~5% of the ~3400 B
+adapter-level figure. The payload the exporter will write dominates both sides.
+A 1024-trace smoke sample can invert the ratio (heap noise); it stabilizes
+near 1.00× by 20 000 traces.
+
+Ingest is where Astriena is ahead today: about **2.25×** lower `ConsumeTraces`
+latency and fewer allocs (52 vs 82). That is the public API, with the
+async-vs-sync caveat above.
+
+This comparison is the gate the `TODO(core)` note in
+[`internal/sampling/engine.go`](../internal/sampling/engine.go) asked for
+before lock-striping / smarter eviction. Those remain deferred — they target
+mutex contention and cap behavior, not this memory ratio. A Rust hot path is
+also still not justified: this run does not show Go GC / memory losing to
+stock at the processor boundary. If a later customer-scale run does, that is
+the trigger; do not start a rewrite on the back of these numbers.

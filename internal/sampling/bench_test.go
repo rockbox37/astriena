@@ -21,9 +21,8 @@ import (
 //     "~80% ingestion reduction" claim (BenchmarkEngineConsume).
 //
 // These establish Astriena's own baseline. The head-to-head against the stock
-// tail_sampling processor lives outside this dependency-free module (it needs
-// the contrib processor and pdata) and is tracked as the next milestone in
-// docs/benchmarks.md.
+// tail_sampling processor lives in the separate bench/ module (it needs the
+// contrib processor and pdata) — see docs/benchmarks.md.
 
 // blackholeSink discards forwarded spans so a sampled decision retains nothing —
 // the buffer-memory measurement then reflects only what the engine itself holds.
