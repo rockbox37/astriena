@@ -82,6 +82,72 @@ func TestMaxSpansPerTraceBoundsSingleTrace(t *testing.T) {
 	}
 }
 
+func TestDecisionWaitDropsPendingTrace(t *testing.T) {
+	sink := &recordingSink{}
+	base := time.Unix(0, 0)
+	clk := base
+	eng := NewEngine(Config{
+		DecisionWait: time.Second,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+	eng.now = func() time.Time { return clk }
+
+	tid := TraceID{0x07}
+	// A 200 OK span the policy never matches: it stays Pending, buffered.
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: tid, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if got := eng.NotSampled(); got != 0 {
+		t.Fatalf("before DecisionWait: NotSampled() = %d, want 0", got)
+	}
+
+	// Advance past DecisionWait and sweep: the trace must be decided NotSampled
+	// (dropped), not forwarded, and not left buffered.
+	clk = base.Add(2 * time.Second)
+	if err := eng.sweep(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(sink.got) != 0 {
+		t.Fatalf("expected nothing forwarded, got %d batches", len(sink.got))
+	}
+	if got := eng.NotSampled(); got != 1 {
+		t.Fatalf("NotSampled() = %d, want 1 (pending trace dropped at DecisionWait)", got)
+	}
+}
+
+func TestShutdownDrainsPendingAsNotSampled(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour, // long enough that nothing expires on its own
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+	eng.Start()
+
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x08}, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	// Still buffered: the hour-long wait has not elapsed.
+	if got := eng.NotSampled(); got != 0 {
+		t.Fatalf("before Shutdown: NotSampled() = %d, want 0", got)
+	}
+
+	if err := eng.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if len(sink.got) != 0 {
+		t.Fatalf("expected nothing forwarded, got %d batches", len(sink.got))
+	}
+	if got := eng.NotSampled(); got != 1 {
+		t.Fatalf("NotSampled() = %d, want 1 (pending trace force-dropped on shutdown)", got)
+	}
+}
+
 func TestLatencyPolicyDropsFastTrace(t *testing.T) {
 	sink := &recordingSink{}
 	eng := NewEngine(Config{

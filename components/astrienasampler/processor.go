@@ -31,8 +31,14 @@ func (p *samplerProcessor) Capabilities() consumer.Capabilities {
 	return consumer.Capabilities{MutatesData: false}
 }
 
-func (p *samplerProcessor) Start(context.Context, component.Host) error { return nil }
-func (p *samplerProcessor) Shutdown(context.Context) error              { return nil }
+func (p *samplerProcessor) Start(context.Context, component.Host) error {
+	p.engine.Start()
+	return nil
+}
+
+func (p *samplerProcessor) Shutdown(ctx context.Context) error {
+	return p.engine.Shutdown(ctx)
+}
 
 // ConsumeTraces translates incoming pdata into engine spans and feeds the engine.
 func (p *samplerProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
