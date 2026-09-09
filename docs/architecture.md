@@ -82,7 +82,10 @@ scale — a data-driven trigger, not a speculative one.
 - **FFI caveat:** if instead calling Rust from Go via cgo, cross the boundary
   **per batch, never per span** — per-span cgo overhead would erase the gains.
 - **Not worth it until measured.** Two toolchains and a smaller contributor pool
-  for that component are real costs; adopt Rust only against evidence.
+  for that component are real costs; adopt Rust only against evidence. The
+  adapter-level head-to-head in [`benchmarks.md`](benchmarks.md) does **not**
+  show Go losing on in-flight heap vs stock (`~1.00×`); do not start a rewrite
+  on the back of those numbers.
 
 ## Repository layout
 
@@ -101,7 +104,8 @@ astriena/
 ├── components/
 │   ├── astrienasampler/          # thin Collector processor adapter (own go.mod)
 │   └── clickhouseexporter/       # thin Collector exporter adapter (own go.mod)
-└── .github/workflows/ci.yml      # CI: pure core + full distro build
+├── bench/                        # head-to-head vs stock tail_sampling (own go.mod)
+└── .github/workflows/ci.yml      # CI: pure core + adapters + h2h + distro build
 ```
 
 ### Modules
@@ -114,6 +118,8 @@ component it compiles in must be its own Go module.
   offline and fast (this is what keeps the core portable and benchmarkable).
 - **Component modules** under `components/*` — each has its own `go.mod`, depends
   on the OTel Collector, and reaches the core via `replace … => ../../`.
+- **`bench/`** — head-to-head vs contrib `tailsamplingprocessor`. Own `go.mod`
+  so the root module stays Collector-free; see [`benchmarks.md`](benchmarks.md).
 
 Cross-module gotcha (documented in `builder-config.yaml`): a dependency's own
 `replace` is ignored by the generated distribution module, so the manifest's
