@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" role="img" aria-labelledby="title">
+  <title id="title">Astriena</title>
+  <rect width="16" height="16" rx="3.5" fill="#0B1220"/>
+  <g fill="none" stroke="#C4B48A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 3.1 L5 7 L4 13"/>
+    <path d="M8 3.1 L11.2 6.8 L12.2 13"/>
+    <path d="M5 7 L11.2 6.8"/>
+  </g>
+  <g fill="#E8D5A3">
+    <circle cx="8" cy="3.1" r="1.2"/>
+    <circle cx="5" cy="7" r="0.95"/>
+    <circle cx="11.2" cy="6.8" r="0.95"/>
+    <circle cx="4" cy="13" r="0.85"/>
+    <circle cx="12.2" cy="13" r="0.85"/>
+  </g>
+  <circle cx="8" cy="3.1" r="0.4" fill="#F7F1E1"/>
+</svg>

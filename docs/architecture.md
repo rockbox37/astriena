@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/astriena-icon-512.png" width="64" height="64" alt="Astriena constellation mark">
+</p>
+
 # Astriena Architecture
 
 ## Positioning
@@ -78,6 +82,9 @@ astriena/
 ├── builder-config.yaml           # ocb manifest for the distribution
 ├── config.yaml                   # example runtime config
 ├── Makefile                      # test/lint the pure core; build the distro
+├── docs/
+│   ├── architecture.md
+│   └── assets/                   # constellation mark, favicon, social preview
 ├── internal/
 │   ├── sampling/                 # PURE tail-sampling engine (+ tests)
 │   └── clickhouse/               # PURE ClickHouse writer

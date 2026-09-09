@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Astriena  of the stars</title>
+  <desc id="desc">Night-sky banner with the Astriena asterism and wordmark. For GitHub social preview (1280ù640).</desc>
+  <defs>
+    <radialGradient id="sky" cx="32%" cy="40%" r="80%">
+      <stop offset="0%" stop-color="#1A2740"/>
+      <stop offset="55%" stop-color="#0F1828"/>
+      <stop offset="100%" stop-color="#0B1220"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#sky)"/>
+  <!-- Field stars -->
+  <g fill="#5C6B84">
+    <circle cx="80" cy="70" r="1.2"/>
+    <circle cx="160" cy="140" r="0.9"/>
+    <circle cx="240" cy="48" r="1.1"/>
+    <circle cx="420" cy="90" r="0.8"/>
+    <circle cx="980" cy="70" r="1.2"/>
+    <circle cx="1100" cy="120" r="0.9"/>
+    <circle cx="1180" cy="200" r="1.1"/>
+    <circle cx="1040" cy="520" r="1"/>
+    <circle cx="200" cy="540" r="1.1"/>
+    <circle cx="60" cy="400" r="0.8"/>
+    <circle cx="720" cy="80" r="0.7"/>
+    <circle cx="860" cy="560" r="0.9"/>
+    <circle cx="1240" cy="400" r="0.8"/>
+    <circle cx="500" cy="580" r="0.7"/>
+  </g>
+  <!-- Large asterism (scaled ~5.6ù from the 64 mark, origin ~96,120) -->
+  <g transform="translate(96 92) scale(5.6)">
+    <g fill="none" stroke="#C4B48A" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M32 11 L19 26 L15 50"/>
+      <path d="M32 11 L45 24 L50 51"/>
+      <path d="M19 26 L45 24"/>
+    </g>
+    <g fill="#E8D5A3">
+      <circle cx="32" cy="11" r="2.05"/>
+      <circle cx="19" cy="26" r="1.55"/>
+      <circle cx="45" cy="24" r="1.55"/>
+      <circle cx="15" cy="50" r="1.35"/>
+      <circle cx="50" cy="51" r="1.35"/>
+    </g>
+    <g fill="#F7F1E1">
+      <circle cx="32" cy="11" r="0.75"/>
+      <circle cx="19" cy="26" r="0.55"/>
+      <circle cx="45" cy="24" r="0.55"/>
+      <circle cx="15" cy="50" r="0.45"/>
+      <circle cx="50" cy="51" r="0.45"/>
+    </g>
+  </g>
+  <text x="560" y="292" fill="#E8EEF7" font-family="Iowan Old Style, Palatino Linotype, Palatino, Georgia, serif" font-size="92" font-weight="600" letter-spacing="2">Astriena</text>
+  <text x="564" y="352" fill="#9AA8BC" font-family="Iowan Old Style, Palatino Linotype, Palatino, Georgia, serif" font-size="28" font-style="italic" letter-spacing="4">of the stars</text>
+  <text x="564" y="408" fill="#9AA8BC" font-family="Georgia, Palatino, serif" font-size="20">OpenTelemetry sampling ù BYOS ClickHouse</text>
+</svg>
