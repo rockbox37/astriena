@@ -102,13 +102,15 @@ func newStock(next consumer.Traces, cfg procCfg) (processor.Traces, error) {
 }
 
 func shutdown(p processor.Traces) {
-	_ = p.Shutdown(context.Background())
+	if err := p.Shutdown(context.Background()); err != nil {
+		panic(fmt.Errorf("processor Shutdown: %w", err))
+	}
 }
 
 // drainStock waits for the stock processor's workChan event loop to absorb
 // the last enqueued batches. ConsumeTraces copies and sends; the buffer insert
-// is async. After the last send at most a small number of batches remain
-// queued (workChan is buffered to GOMAXPROCS).
+// is queued onto workChan (buffered to GOMAXPROCS). After the last send at
+// most a small number of batches remain queued, so a short pause is enough.
 func drainStock() {
 	time.Sleep(100 * time.Millisecond)
 }
