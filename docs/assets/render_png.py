@@ -114,6 +114,20 @@ class Canvas:
                 if cov:
                     self.set(x, y, color, a * cov)
 
+    def ring(
+        self, cx: float, cy: float, r: float, width: float,
+        color: tuple[int, int, int], alpha: float,
+    ) -> None:
+        edge = width / 2
+        x0, x1 = int(cx - r - edge - 1), int(cx + r + edge + 2)
+        y0, y1 = int(cy - r - edge - 1), int(cy + r + edge + 2)
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                distance = abs(math.hypot(x + .5 - cx, y + .5 - cy) - r)
+                coverage = max(0.0, min(1.0, edge + .5 - distance))
+                if coverage:
+                    self.set(x, y, color, alpha * coverage)
+
     def line(
         self, x0: float, y0: float, x1: float, y1: float, width: float,
         color: tuple[int, int, int], alpha: float = .07,
@@ -151,6 +165,7 @@ def draw_asterism(
     c: Canvas, ox: float, oy: float, scale: float, line_w: float,
     line_alpha: float = .07,
 ) -> None:
+    c.ring(ox + 32 * scale, oy + 32 * scale, 24.5 * scale, .32 * scale, LINE, .05)
     for (x0, y0), (x1, y1) in LINES:
         c.line(
             ox + x0 * scale, oy + y0 * scale,
@@ -177,6 +192,7 @@ def render_mark(size: int, path: Path) -> None:
 def render_mark_16(path: Path) -> None:
     c = Canvas(16, 16, BG)
     c.rounded_rect_mask(3.5)
+    c.ring(8, 8, 6, .35, LINE, .06)
     for (x0, y0), (x1, y1) in LINES_16:
         c.line(x0, y0, x1, y1, .45, LINE, .10)
     for x, y, r in STARS_16:

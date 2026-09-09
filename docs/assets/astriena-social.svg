@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
   <title id="title">Astriena ? of the stars</title>
-  <desc id="desc">Night-sky banner with an irregular star field, Astriena wordmark, and tagline. For GitHub social preview at 1280 by 640.</desc>
+  <desc id="desc">Night-sky banner with an irregular star field, a faint circular frame, Astriena wordmark, and tagline. For GitHub social preview at 1280 by 640.</desc>
   <defs>
     <radialGradient id="sky" cx="32%" cy="40%" r="80%">
       <stop offset="0%" stop-color="#141C2E"/>
@@ -38,6 +38,7 @@
   </g>
   <!-- Enlarged copy of the hand-authored 64-unit mark -->
   <g transform="translate(96 92) scale(5.6)">
+    <circle cx="32" cy="32" r="24.5" fill="none" stroke="#C4B48A" stroke-width=".32" stroke-opacity=".05"/>
     <g fill="none" stroke="#C4B48A" stroke-width=".28" stroke-opacity=".07" stroke-linecap="round" stroke-linejoin="round">
       <path d="M9 21 L18 16 L31 19 L43 12"/>
       <path d="M31 19 L39 31 L54 27"/>

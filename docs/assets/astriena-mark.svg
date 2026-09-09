@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
   <title id="title">Astriena</title>
-  <desc id="desc">An original irregular field of stars with faint star-chart connections on a deep night sky.</desc>
+  <desc id="desc">An original irregular field of stars with faint chart connections and an almost transparent circular frame on a deep night sky.</desc>
   <defs>
     <radialGradient id="sky" cx="34%" cy="27%" r="82%">
       <stop offset="0%" stop-color="#141C2E"/>
@@ -26,6 +26,10 @@
     <circle cx="27" cy="14" r=".19"/><circle cx="39" cy="38" r=".24"/>
     <circle cx="54" cy="15" r=".18"/><circle cx="35" cy="56" r=".18"/>
   </g>
+
+  <!-- A telescope-field circle at 5% opacity: felt before it is noticed. -->
+  <circle cx="32" cy="32" r="24.5" fill="none" stroke="#C4B48A"
+          stroke-width=".32" stroke-opacity=".05"/>
 
   <!-- Broken, low-contrast chart lines: a loose branching path, not a glyph. -->
   <g fill="none" stroke="#C4B48A" stroke-width=".28" stroke-opacity=".07"
