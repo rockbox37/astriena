@@ -74,6 +74,7 @@ scale — a data-driven trigger, not a speculative one.
 
 ```
 astriena/
+├── go.mod                        # root module: the pure core (no OTel deps)
 ├── builder-config.yaml           # ocb manifest for the distribution
 ├── config.yaml                   # example runtime config
 ├── Makefile                      # test/lint the pure core; build the distro
@@ -81,21 +82,42 @@ astriena/
 │   ├── sampling/                 # PURE tail-sampling engine (+ tests)
 │   └── clickhouse/               # PURE ClickHouse writer
 ├── components/
-│   ├── astrienasampler/          # thin Collector processor adapter
-│   └── clickhouseexporter/       # thin Collector exporter adapter
-└── .github/workflows/ci.yml      # CI: build/vet/test the pure core
+│   ├── astrienasampler/          # thin Collector processor adapter (own go.mod)
+│   └── clickhouseexporter/       # thin Collector exporter adapter (own go.mod)
+└── .github/workflows/ci.yml      # CI: pure core + full distro build
 ```
+
+### Modules
+
+This is a multi-module repo, which the Collector Builder requires: every local
+component it compiles in must be its own Go module.
+
+- **Root module** `github.com/rockbox37/astriena` — the pure core under
+  `internal/`. It has **no OpenTelemetry dependency**, so it builds and tests
+  offline and fast (this is what keeps the core portable and benchmarkable).
+- **Component modules** under `components/*` — each has its own `go.mod`, depends
+  on the OTel Collector, and reaches the core via `replace … => ../../`.
+
+Cross-module gotcha (documented in `builder-config.yaml`): a dependency's own
+`replace` is ignored by the generated distribution module, so the manifest's
+top-level `replaces:` re-declares the root-module replace for the `ocb` build.
 
 ## Build
 
 ```
 make test     # pure core, offline
-make build    # assemble the astriena distribution via ocb into ./_build
+make build    # assemble the astriena distribution via ocb into ./_build/astriena
 ```
 
-The pure core builds and tests with plain `go` offline. The full distribution
-requires the Collector module versions in `builder-config.yaml` to be pinned to a
-verified release first (they ship as a starting point and must be bumped/checked).
+Collector module versions are **pinned** in `builder-config.yaml` to the
+`v0.160.0` / `v1.66.0` release line; `make build` produces a runnable
+`./_build/astriena`. Verify the components and an example config with:
+
+```
+./_build/astriena components
+ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/astriena \
+  ./_build/astriena validate --config config.yaml
+```
 
 ## Releasing (for the private cloud repo to consume)
 

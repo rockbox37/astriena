@@ -33,8 +33,9 @@ func NewFactory() processor.Factory {
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		DecisionWait: 5 * time.Second,
-		MaxTraces:    50_000,
+		DecisionWait:     5 * time.Second,
+		MaxTraces:        50_000,
+		MaxSpansPerTrace: 10_000,
 	}
 }
 

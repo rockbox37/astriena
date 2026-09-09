@@ -4,7 +4,7 @@
 # The full distribution is assembled by the OpenTelemetry Collector Builder,
 # which fetches and pins the Collector modules named in builder-config.yaml.
 
-OCB_VERSION ?= 0.116.0
+OCB_VERSION ?= 0.160.0
 GOBIN       := $(shell go env GOPATH)/bin
 BUILDER     := $(GOBIN)/builder
 BUILDER_CFG := builder-config.yaml

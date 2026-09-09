@@ -34,6 +34,54 @@ func TestStatusCodePolicyKeepsErrors(t *testing.T) {
 	}
 }
 
+func TestMaxTracesBoundsBuffer(t *testing.T) {
+	sink := &recordingSink{}
+	// Policy never matches these spans, so both traces would otherwise stay
+	// buffered as Pending. MaxTraces=1 must admit the first and drop the second.
+	eng := NewEngine(Config{
+		DecisionWait: time.Second,
+		MaxTraces:    1,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+
+	err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x01}, StatusCode: "OK"},
+		{TraceID: TraceID{0x02}, StatusCode: "OK"},
+	})
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if got := eng.Dropped(); got != 1 {
+		t.Fatalf("Dropped() = %d, want 1 (second trace dropped at cap)", got)
+	}
+}
+
+func TestMaxSpansPerTraceBoundsSingleTrace(t *testing.T) {
+	sink := &recordingSink{}
+	// One trace id streaming many non-matching spans must not grow without bound.
+	eng := NewEngine(Config{
+		DecisionWait:     time.Second,
+		MaxTraces:        100,
+		MaxSpansPerTrace: 2,
+		Policies:         []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+
+	tid := TraceID{0x09}
+	spans := []*Span{
+		{TraceID: tid, StatusCode: "OK"},
+		{TraceID: tid, StatusCode: "OK"},
+		{TraceID: tid, StatusCode: "OK"},
+		{TraceID: tid, StatusCode: "OK"},
+	}
+	if err := eng.Consume(context.Background(), spans); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	// 2 buffered, 2 dropped past the per-trace cap.
+	if got := eng.Dropped(); got != 2 {
+		t.Fatalf("Dropped() = %d, want 2 (spans past MaxSpansPerTrace)", got)
+	}
+}
+
 func TestLatencyPolicyDropsFastTrace(t *testing.T) {
 	sink := &recordingSink{}
 	eng := NewEngine(Config{

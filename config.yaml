@@ -16,6 +16,7 @@ processors:
   astriena_sampler:
     decision_wait: 5s
     max_traces: 50000
+    max_spans_per_trace: 10000
     policies:
       # Keep 100% of traces with an error span.
       - type: status_code

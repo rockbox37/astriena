@@ -5,9 +5,9 @@
 #
 # Build with:  make build   (installs the builder and runs it against this file)
 #
-# NOTE: the Collector module versions below are a starting point. Verify and bump
-# them to the current Collector release before the first build, and keep the
-# receiver / processor / provider (v0.x) and core (v1.x) versions in lockstep.
+# Module versions are pinned to the OpenTelemetry Collector v0.160.0 / v1.66.0
+# release line. Bump the v0.x (receiver/processor) and v1.x (core/pdata/confmap)
+# groups together when upgrading.
 dist:
   name: astriena
   description: A focused OpenTelemetry distribution with an efficient tail-sampling engine (BYOS to ClickHouse).
@@ -15,11 +15,11 @@ dist:
   version: 0.1.0
 
 receivers:
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.116.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.160.0
 
 processors:
   # Reused, hardened plumbing:
-  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.116.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.160.0
   # Astriena's own tail-sampling engine (the wedge):
   - gomod: github.com/rockbox37/astriena/components/astrienasampler v0.1.0
     path: ./components/astrienasampler
@@ -31,5 +31,12 @@ exporters:
 extensions: []
 
 providers:
-  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.22.0
-  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.22.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.66.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.66.0
+
+# The local components depend on the repo-root module (github.com/rockbox37/astriena)
+# for the pure core packages. A dependency's own `replace` is ignored by the
+# generated distribution module, so the root module is replaced here (path is
+# relative to the generated module in ./_build).
+replaces:
+  - github.com/rockbox37/astriena => ../

@@ -32,13 +32,15 @@ Migrate in one line: point your existing Collector's OTLP exporter at Astriena.
 
 ```sh
 make test     # build & test the pure core (offline)
-make build    # assemble the astriena distribution into ./_build
-./_build/astriena --config config.yaml
+make build    # assemble the astriena distribution into ./_build/astriena
+ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/astriena \
+  ./_build/astriena --config config.yaml
 ```
 
-> Note: the full `make build` fetches the OpenTelemetry Collector modules pinned
-> in [`builder-config.yaml`](builder-config.yaml). Those versions ship as a
-> starting point — verify/bump them to the current Collector release first.
+> `make build` fetches the OpenTelemetry Collector modules pinned in
+> [`builder-config.yaml`](builder-config.yaml) (the `v0.160.0` / `v1.66.0` line)
+> and produces a runnable binary. The pure core (`make test`) builds offline with
+> no OTel dependency.
 
 ## Status
 

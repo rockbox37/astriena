@@ -77,6 +77,12 @@ type Config struct {
 	DecisionWait time.Duration
 	// MaxTraces caps the number of in-flight traces (memory safeguard).
 	MaxTraces int
+	// MaxSpansPerTrace caps how many spans the engine buffers for a single
+	// trace — a safeguard against one runaway trace id growing without bound
+	// across batches. <=0 disables. This bounds the engine's per-trace domain
+	// spans; the opaque payload each span carries (Span.Raw) is the adapter's
+	// concern (see toEngineSpans).
+	MaxSpansPerTrace int
 	// Policies are evaluated in order; the first non-Pending decision wins.
 	Policies []Policy
 }
@@ -84,20 +90,21 @@ type Config struct {
 // Engine buffers spans by trace id, applies policies, and forwards the spans of
 // sampled traces to the Sink.
 //
-// TODO(core): this is a correct-but-naive skeleton. The production hot path needs:
-//   - a sharded / lock-striped buffer so a single mutex is not the bottleneck
-//     under load (this is where the memory/throughput wedge is won or lost);
-//   - a time-ordered structure to force a decision once DecisionWait elapses;
-//   - MaxTraces enforcement with an eviction + drop metric.
-//
-// Benchmark this package against the stock tail_sampling processor before
-// optimizing — see docs/architecture.md.
+// MaxTraces is enforced as a hard memory bound (new traces are dropped once the
+// cap is reached). TODO(core): the production hot path still needs a sharded /
+// lock-striped buffer so a single mutex is not the bottleneck under load (this is
+// where the memory/throughput wedge is won or lost), a time-ordered structure to
+// force a decision once DecisionWait elapses, and smarter eviction than
+// drop-newest (e.g. evict the oldest still-Pending trace). Benchmark this package
+// against the stock tail_sampling processor before optimizing — see
+// docs/architecture.md.
 type Engine struct {
 	cfg  Config
 	sink Sink
 
-	mu     sync.Mutex
-	traces map[TraceID]*Trace
+	mu      sync.Mutex
+	traces  map[TraceID]*Trace
+	dropped int64
 }
 
 // NewEngine constructs an Engine that forwards sampled traces to sink.
@@ -117,14 +124,38 @@ func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 	for _, s := range spans {
 		t, ok := e.traces[s.TraceID]
 		if !ok {
+			// MaxTraces is a hard safeguard against unbounded buffer growth: once
+			// the in-flight cap is reached, drop spans for new traces rather than
+			// grow without bound. Spans for traces already buffered still append.
+			if e.cfg.MaxTraces > 0 && len(e.traces) >= e.cfg.MaxTraces {
+				e.dropped++
+				continue
+			}
 			t = &Trace{ID: s.TraceID, Arrived: time.Now()}
 			e.traces[s.TraceID] = t
+		}
+		// Bound spans for a single trace: one runaway trace id must not grow
+		// without limit even though the trace-count cap is not reached.
+		if e.cfg.MaxSpansPerTrace > 0 && len(t.Spans) >= e.cfg.MaxSpansPerTrace {
+			e.dropped++
+			continue
 		}
 		t.Spans = append(t.Spans, s)
 	}
 	// TODO(core): decouple decision from ingest via DecisionWait timers instead
 	// of evaluating inline on every batch.
 	return e.evaluateLocked(ctx)
+}
+
+// Dropped returns the number of spans dropped by a memory safeguard — either
+// the MaxTraces cap (a new trace at the trace-count limit) or the
+// MaxSpansPerTrace cap (a span past a trace's per-trace limit).
+// TODO(core): surface this as a Collector metric; split the two reasons if they
+// need to be distinguished.
+func (e *Engine) Dropped() int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.dropped
 }
 
 func (e *Engine) evaluateLocked(ctx context.Context) error {

@@ -5,9 +5,10 @@ import "time"
 // Config is the Collector configuration for the Astriena tail-sampling processor.
 // It maps directly onto sampling.Config plus a serializable policy list.
 type Config struct {
-	DecisionWait time.Duration `mapstructure:"decision_wait"`
-	MaxTraces    int           `mapstructure:"max_traces"`
-	Policies     []PolicyCfg   `mapstructure:"policies"`
+	DecisionWait     time.Duration `mapstructure:"decision_wait"`
+	MaxTraces        int           `mapstructure:"max_traces"`
+	MaxSpansPerTrace int           `mapstructure:"max_spans_per_trace"`
+	Policies         []PolicyCfg   `mapstructure:"policies"`
 }
 
 // PolicyCfg is one keep/drop rule in config form. The processor translates these
