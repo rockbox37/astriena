@@ -49,4 +49,12 @@ pinned released versions.
   `./_build/astriena`.
 - `Makefile`, example `config.yaml`, and CI covering the pure core, the component
   adapters, and the full distribution build.
+- Isolation benchmarks for the sampling engine
+  (`internal/sampling/bench_test.go`, `make bench`) establishing the baseline the
+  wedge claims rest on: the realized drop rate (**79.99%** at a 20% keep fraction,
+  proving the "~80% ingestion reduction" through the real policy + `DecisionWait`
+  path) and per-trace buffer bookkeeping (~120–180 heap B/trace). Methodology,
+  results, and the still-open head-to-head against the stock `tail_sampling`
+  processor are in `docs/benchmarks.md`. Writing them surfaced the O(n²)
+  buffer-scan since fixed (see Changed above).
 - `docs/architecture.md`.

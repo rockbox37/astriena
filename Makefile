@@ -13,6 +13,7 @@ BUILDER_CFG := builder-config.yaml
 help:
 	@echo "astriena make targets:"
 	@echo "  make test     - unit-test the pure core (offline)"
+	@echo "  make bench    - benchmark the sampling engine (offline; see docs/benchmarks.md)"
 	@echo "  make lint     - go vet the pure core (offline)"
 	@echo "  make tidy     - go mod tidy"
 	@echo "  make builder  - install the OpenTelemetry Collector Builder"
@@ -22,6 +23,10 @@ help:
 .PHONY: test
 test:
 	go test ./internal/...
+
+.PHONY: bench
+bench:
+	go test ./internal/sampling/ -run '^$$' -bench . -benchmem -benchtime=200000x
 
 .PHONY: lint
 lint:

@@ -61,7 +61,8 @@ preserves the root module's zero-heavy-deps invariant below.
 Keeping the core pure is deliberate: it lets us swap the surrounding framework,
 extract a standalone binary, or reimplement the hot path in another language
 without rewriting the sampling logic — and it lets us benchmark the engine in
-isolation.
+isolation (see [`benchmarks.md`](benchmarks.md), which establishes the baseline
+the memory/reduction claims rest on before any hot-path optimization).
 
 ## Deferred: a possible Rust hot path
 
