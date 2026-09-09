@@ -12,16 +12,14 @@ package clickhouse
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
 
-// Config describes the customer's own ClickHouse target and write behavior.
+// Config describes write-batching behavior. Connection identity (DSN, database,
+// table) lives on the Inserter, not here.
 type Config struct {
-	DSN      string // e.g. clickhouse://user:pass@host:9000/db (BYOS: customer-owned)
-	Database string
-	Table    string
-
 	// BatchSize is the row count that triggers a synchronous flush. <=0 flushes
 	// every Write (no size-based batching).
 	BatchSize int
@@ -29,6 +27,11 @@ type Config struct {
 	// <=0 disables the background flush ticker (size- and Close-triggered only).
 	FlushInterval time.Duration
 }
+
+var (
+	errWriterClosed = errors.New("clickhouse: writer closed")
+	errBufferFull   = errors.New("clickhouse: write buffer full")
+)
 
 // Row is one span flattened for insertion. The exporter builds these from the
 // engine's sampled spans.
@@ -70,16 +73,19 @@ type Inserter interface {
 // columns exist before the rows referencing them land.
 //
 // TODO(core): the current design flushes inline on the caller's goroutine and
-// re-buffers a failed batch for the Collector's queue/retry to drive again;
-// a dedicated worker with bounded backpressure and per-reason drop metrics is
+// re-buffers a failed batch so the writer owns retry (Write returns nil). A
+// dedicated worker with bounded backpressure and per-reason drop metrics is
 // the next step once the driver binding is exercised against a real cluster.
 type Writer struct {
 	cfg Config
 	ins Inserter
 
-	mu    sync.Mutex
-	buf   []Row
-	known map[string]bool // attribute keys already ensured via AddColumns
+	mu      sync.Mutex
+	buf     []Row
+	known   map[string]bool // attribute keys already ensured via AddColumns
+	closed  bool
+	stopped bool
+	inFlush sync.WaitGroup
 
 	stop chan struct{}
 	done chan struct{}
@@ -101,11 +107,15 @@ func (w *Writer) Start(ctx context.Context) error {
 	if err := w.ins.EnsureBaseSchema(ctx); err != nil {
 		return err
 	}
-	if w.cfg.FlushInterval <= 0 || w.stop != nil {
+	w.mu.Lock()
+	if w.cfg.FlushInterval <= 0 || w.stop != nil || w.closed {
+		w.mu.Unlock()
 		return nil
 	}
+	w.stopped = false
 	w.stop = make(chan struct{})
 	w.done = make(chan struct{})
+	w.mu.Unlock()
 	go func() {
 		defer close(w.done)
 		t := time.NewTicker(w.cfg.FlushInterval)
@@ -115,9 +125,17 @@ func (w *Writer) Start(ctx context.Context) error {
 			case <-w.stop:
 				return
 			case <-t.C:
-				// A time-based flush error is left for the next flush to retry;
-				// the rows stay buffered (flush re-buffers on failure).
-				_ = w.flush(context.Background())
+				// Account before I/O so Close cannot slip through inFlush==0
+				// between unlocking and starting the insert. Skip if Close
+				// already marked us closed — do not Add after Close's Wait.
+				w.mu.Lock()
+				if w.closed {
+					w.mu.Unlock()
+					continue
+				}
+				w.inFlush.Add(1)
+				w.mu.Unlock()
+				_ = w.flushAndDone(context.Background())
 			}
 		}
 	}()
@@ -132,18 +150,63 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 		return nil
 	}
 	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return errWriterClosed
+	}
+	// Reject only when a retry leftover is already occupying the cap. An
+	// oversized single Write with an empty buffer is flushed through so a
+	// Collector batch larger than BatchSize*4 is not rejected forever.
+	if limit := w.bufCapLocked(); limit > 0 && len(w.buf) > 0 && len(w.buf)+len(rows) > limit {
+		// Retry the leftover first so a failed oversized flush does not stall
+		// ingest until the ticker (or forever when FlushInterval is unset).
+		w.inFlush.Add(1)
+		w.mu.Unlock()
+		_ = w.flushAndDone(ctx)
+		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			return errWriterClosed
+		}
+		if limit := w.bufCapLocked(); limit > 0 && len(w.buf) > 0 && len(w.buf)+len(rows) > limit {
+			w.mu.Unlock()
+			return errBufferFull
+		}
+	}
 	w.buf = append(w.buf, rows...)
 	ready := w.cfg.BatchSize <= 0 || len(w.buf) >= w.cfg.BatchSize
+	if ready {
+		// Account under the lock so Close cannot observe inFlush==0 in the
+		// gap after unlock and before InsertBatch.
+		w.inFlush.Add(1)
+	}
 	w.mu.Unlock()
 	if ready {
-		return w.flush(ctx)
+		// Writer owns retry: flush re-buffers on failure. Returning nil here
+		// keeps a Collector re-Consume from appending the same rows again.
+		_ = w.flushAndDone(ctx)
 	}
 	return nil
 }
 
+// bufCapLocked is the hard memory bound on buffered rows. A failed flush is
+// re-buffered even if it exceeds this; subsequent Writes are rejected until
+// a flush succeeds. When BatchSize is unset, use the factory default size.
+func (w *Writer) bufCapLocked() int {
+	if w.cfg.BatchSize > 0 {
+		return w.cfg.BatchSize * 4
+	}
+	return 10_000
+}
+
 // flush takes the buffered rows, ensures any new attribute columns exist, and
-// inserts the batch. On failure the batch is returned to the buffer so the
-// Collector's retry/queue can drive another attempt rather than losing data.
+// inserts the batch. On failure the batch is returned to the buffer so a later
+// Write, ticker, or Close can retry — the writer owns that retry.
+func (w *Writer) flushAndDone(ctx context.Context) error {
+	defer w.inFlush.Done()
+	return w.flush(ctx)
+}
+
 func (w *Writer) flush(ctx context.Context) error {
 	w.mu.Lock()
 	if len(w.buf) == 0 {
@@ -202,17 +265,44 @@ func (w *Writer) rebuffer(batch []Row) {
 }
 
 // Close stops the flush ticker, drains any buffered rows, and closes the
-// Inserter.
-func (w *Writer) Close() error {
-	if w.stop != nil {
-		close(w.stop)
-		<-w.done
-		w.stop = nil
+// Inserter. ctx cancels only the wait for the ticker; the drain always runs
+// so rows Write already accepted are not dropped.
+func (w *Writer) Close(ctx context.Context) error {
+	w.mu.Lock()
+	w.closed = true
+	stop, done := w.stop, w.done
+	if stop != nil && !w.stopped {
+		w.stopped = true
+		close(stop)
 	}
+	w.mu.Unlock()
+
+	var waitErr error
+	if stop != nil {
+		select {
+		case <-done:
+			w.mu.Lock()
+			w.stop = nil
+			w.mu.Unlock()
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+	}
+
+	// Always wait for in-flight flushes, then drain with Background. A
+	// cancelled caller ctx must not skip rows Write already accepted.
+	w.inFlush.Wait()
+
 	flushErr := w.flush(context.Background())
-	closeErr := w.ins.Close()
 	if flushErr != nil {
+		if waitErr != nil {
+			return waitErr
+		}
 		return flushErr
+	}
+	closeErr := w.ins.Close()
+	if waitErr != nil {
+		return waitErr
 	}
 	return closeErr
 }

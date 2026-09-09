@@ -102,7 +102,7 @@ func TestCloseDrainsAndClosesInserter(t *testing.T) {
 	if len(ins.batches) != 0 {
 		t.Fatalf("before Close: got %d batches, want 0 (below BatchSize)", len(ins.batches))
 	}
-	if err := w.Close(); err != nil {
+	if err := w.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if len(ins.batches) != 1 || len(ins.batches[0]) != 2 {
@@ -118,16 +118,16 @@ func TestInsertErrorRebuffersForRetry(t *testing.T) {
 	ins.failInsert = errors.New("clickhouse unavailable")
 	ctx := context.Background()
 
-	// Buffer hits BatchSize, flush attempts insert, insert fails.
-	err := w.Write(ctx, []Row{{}, {}})
-	if err == nil {
-		t.Fatalf("expected the insert error to surface")
+	// Writer owns retry: a failed flush is re-buffered and Write returns nil so
+	// a Collector re-Consume cannot append the same rows a second time.
+	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
+		t.Fatalf("Write should accept rows when the writer owns retry: %v", err)
 	}
 	if len(ins.batches) != 0 {
 		t.Fatalf("failed insert should record no batch, got %d", len(ins.batches))
 	}
 	// The rows must not be lost: a subsequent flush (driver recovered) inserts them.
-	if err := w.Close(); err != nil {
+	if err := w.Close(ctx); err != nil {
 		t.Fatalf("Close after recovery: %v", err)
 	}
 	if len(ins.batches) != 1 || len(ins.batches[0]) != 2 {
@@ -143,8 +143,94 @@ func TestStartEnsuresBaseSchema(t *testing.T) {
 	if ins.ensured != 1 {
 		t.Fatalf("EnsureBaseSchema called %d times, want 1", ins.ensured)
 	}
-	if err := w.Close(); err != nil {
+	if err := w.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestWriteAfterCloseRejected(t *testing.T) {
+	w, _ := newTestWriter(t, Config{BatchSize: 100})
+	ctx := context.Background()
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := w.Write(ctx, []Row{{}}); err != errWriterClosed {
+		t.Fatalf("Write after Close: got %v, want errWriterClosed", err)
+	}
+}
+
+func TestWriteRejectsWhenBufferFull(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 2})
+	ins.failInsert = errors.New("clickhouse unavailable")
+	ctx := context.Background()
+
+	// Failed flush re-buffers 2 rows; cap is BatchSize*4 = 8. Fill to the cap
+	// with subsequent Writes that also fail to flush, then reject the overflow.
+	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
+		t.Fatalf("Write 1: %v", err)
+	}
+	ins.failInsert = errors.New("still down")
+	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
+		t.Fatalf("Write 2: %v", err)
+	}
+	ins.failInsert = errors.New("still down")
+	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
+		t.Fatalf("Write 3: %v", err)
+	}
+	ins.failInsert = errors.New("still down")
+	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
+		t.Fatalf("Write 4: %v", err)
+	}
+	ins.failInsert = errors.New("still down")
+	if err := w.Write(ctx, []Row{{}}); err != errBufferFull {
+		t.Fatalf("Write past cap: got %v, want errBufferFull", err)
+	}
+}
+
+func TestWriteRetriesLeftoverBeforeRejecting(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 2})
+	ins.failInsert = errors.New("clickhouse unavailable")
+	ctx := context.Background()
+
+	if err := w.Write(ctx, make([]Row, 20)); err != nil {
+		t.Fatalf("oversized Write: %v", err)
+	}
+	// Leftover is 20 > cap 8. The next Write must flush that leftover rather
+	// than reject without retrying.
+	if err := w.Write(ctx, []Row{{}}); err != nil {
+		t.Fatalf("Write after leftover: %v", err)
+	}
+	if len(ins.batches) != 1 || len(ins.batches[0]) != 20 {
+		t.Fatalf("leftover not retried: got %v, want 1 batch of 20", sizes(ins.batches))
+	}
+}
+
+func TestCloseCancelledCtxStillDrains(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 100})
+	ctx := context.Background()
+	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := w.Close(cancelled); err != nil {
+		t.Fatalf("Close with cancelled ctx: %v", err)
+	}
+	if len(ins.batches) != 1 || len(ins.batches[0]) != 2 {
+		t.Fatalf("cancelled Close must still drain: got %v", sizes(ins.batches))
+	}
+}
+
+func TestWriteAcceptsOversizedBatchWhenBufferEmpty(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 2})
+	ctx := context.Background()
+	// Cap is 8; a single 20-row Write with an empty buffer must still flush.
+	rows := make([]Row, 20)
+	if err := w.Write(ctx, rows); err != nil {
+		t.Fatalf("oversized Write: %v", err)
+	}
+	if len(ins.batches) != 1 || len(ins.batches[0]) != 20 {
+		t.Fatalf("oversized Write: got %v, want 1 batch of 20", sizes(ins.batches))
 	}
 }
 

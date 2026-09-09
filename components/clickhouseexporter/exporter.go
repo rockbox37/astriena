@@ -24,9 +24,6 @@ func newExporter(_ context.Context, _ exporter.Settings, cfg *Config) (exporter.
 		return nil, err
 	}
 	w, err := clickhouse.NewWriter(clickhouse.Config{
-		DSN:           string(cfg.DSN),
-		Database:      cfg.Database,
-		Table:         cfg.Table,
 		BatchSize:     cfg.BatchSize,
 		FlushInterval: cfg.FlushInterval,
 	}, ins)
@@ -45,7 +42,7 @@ func (e *chExporter) Start(ctx context.Context, _ component.Host) error {
 	return e.w.Start(ctx)
 }
 
-func (e *chExporter) Shutdown(context.Context) error { return e.w.Close() }
+func (e *chExporter) Shutdown(ctx context.Context) error { return e.w.Close(ctx) }
 
 // ConsumeTraces flattens sampled spans into rows and writes them to ClickHouse.
 func (e *chExporter) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {

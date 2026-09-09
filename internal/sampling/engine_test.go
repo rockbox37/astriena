@@ -2,9 +2,12 @@ package sampling
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
+
+var errSink = errors.New("sink unavailable")
 
 // recordingSink captures spans forwarded for sampled traces.
 type recordingSink struct{ got [][]*Span }
@@ -226,6 +229,297 @@ func TestBufferIndexAndOrderStayConsistent(t *testing.T) {
 	}
 	if got := eng.NotSampled(); got != 3 {
 		t.Fatalf("NotSampled()=%d, want 3", got)
+	}
+}
+
+func TestConsumeDecisionWaitIgnoresSinkIO(t *testing.T) {
+	base := time.Unix(0, 0)
+	clk := base
+	sink := &recordingSink{}
+	// A sink that advances the clock as if ConsumeSampled blocked for longer
+	// than DecisionWait. Expiry must still use the Consume-start clock so a
+	// sibling pending trace created in the same batch is not default-dropped.
+	eng := NewEngine(Config{
+		DecisionWait: time.Second,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+	eng.now = func() time.Time { return clk }
+	eng.sink = slowClockSink{recordingSink: sink, advance: func() { clk = base.Add(2 * time.Second) }}
+
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x11}, StatusCode: "ERROR"},
+		{TraceID: TraceID{0x12}, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if len(sink.got) != 1 {
+		t.Fatalf("expected the ERROR trace to be sampled, got %d", len(sink.got))
+	}
+	if got := eng.NotSampled(); got != 0 {
+		t.Fatalf("NotSampled() = %d, want 0 (pending sibling must survive sink I/O)", got)
+	}
+	if _, ok := eng.traces[TraceID{0x12}]; !ok {
+		t.Fatalf("pending sibling was expired during sink I/O")
+	}
+}
+
+type slowClockSink struct {
+	*recordingSink
+	advance func()
+}
+
+func (s slowClockSink) ConsumeSampled(ctx context.Context, spans []*Span) error {
+	s.advance()
+	return s.recordingSink.ConsumeSampled(ctx, spans)
+}
+
+func TestShutdownCancelledStillDrainsAndIsIdempotent(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+	eng.Start()
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x13}, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Cancelled wait must still drain; a second Shutdown must not panic.
+	_ = eng.Shutdown(ctx)
+	if err := eng.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second Shutdown: %v", err)
+	}
+	if got := eng.NotSampled(); got != 1 {
+		t.Fatalf("NotSampled() = %d, want 1 after cancelled-then-repeat Shutdown", got)
+	}
+}
+
+func TestTouchedDoesNotRetainDecidedTraces(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x14}, StatusCode: "ERROR"},
+	}); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	raw := eng.touched[:cap(eng.touched)]
+	for i, tptr := range raw {
+		if tptr != nil {
+			t.Fatalf("touched[%d] still holds a trace after Consume", i)
+		}
+	}
+}
+
+type failingSink struct{ err error }
+
+func (f failingSink) ConsumeSampled(context.Context, []*Span) error { return f.err }
+
+func TestTouchedClearedOnSinkError(t *testing.T) {
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x15}, StatusCode: "ERROR"},
+		{TraceID: TraceID{0x16}, StatusCode: "OK"},
+	}); err == nil {
+		t.Fatal("expected sink error")
+	}
+	raw := eng.touched[:cap(eng.touched)]
+	for i, tptr := range raw {
+		if tptr != nil {
+			t.Fatalf("touched[%d] retained after sink error", i)
+		}
+	}
+}
+
+func TestShutdownSinkErrorDoesNotForceDropKeepWorthy(t *testing.T) {
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x17}, StatusCode: "ERROR"},
+		{TraceID: TraceID{0x18}, StatusCode: "OK"},
+	}); err == nil {
+		t.Fatal("expected sink error from the ERROR trace")
+	}
+	if err := eng.Shutdown(context.Background()); err == nil {
+		t.Fatal("expected Shutdown to surface the sink error")
+	}
+	if got := eng.NotSampled(); got != 0 {
+		t.Fatalf("NotSampled() = %d, want 0 (keep-worthy trace must not be force-dropped)", got)
+	}
+	if _, ok := eng.traces[TraceID{0x17}]; !ok {
+		t.Fatalf("keep-worthy trace was removed after sink error")
+	}
+}
+
+func TestMaxTracesAdmitsNewErrorAfterDuePendingExpires(t *testing.T) {
+	sink := &recordingSink{}
+	base := time.Unix(0, 0)
+	clk := base
+	eng := NewEngine(Config{
+		DecisionWait: time.Second,
+		MaxTraces:    1,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+	eng.now = func() time.Time { return clk }
+
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x1f}, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume OK: %v", err)
+	}
+	clk = base.Add(2 * time.Second)
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x20}, StatusCode: "ERROR"},
+	}); err != nil {
+		t.Fatalf("Consume ERROR: %v", err)
+	}
+	if got := eng.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0 (due Pending must expire before MaxTraces)", got)
+	}
+	if len(sink.got) != 1 {
+		t.Fatalf("expected the new ERROR to be sampled, got %d batches", len(sink.got))
+	}
+}
+
+func TestSinkErrorDoesNotExpireUnevaluatedKeepWorthy(t *testing.T) {
+	base := time.Unix(0, 0)
+	clk := base
+	eng := NewEngine(Config{
+		DecisionWait: time.Second,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+	eng.now = func() time.Time { return clk }
+
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x1d}, SpanID: SpanID{0x01}, StatusCode: "ERROR"},
+		{TraceID: TraceID{0x1e}, SpanID: SpanID{0x02}, StatusCode: "ERROR"},
+	}); err == nil {
+		t.Fatal("expected sink error")
+	}
+	clk = base.Add(2 * time.Second)
+	eng.expire()
+	if got := eng.NotSampled(); got != 0 {
+		t.Fatalf("NotSampled() = %d, want 0 (both ERROR traces must be held)", got)
+	}
+	if _, ok := eng.traces[TraceID{0x1d}]; !ok {
+		t.Fatalf("first ERROR trace was dropped")
+	}
+	if _, ok := eng.traces[TraceID{0x1e}]; !ok {
+		t.Fatalf("second ERROR trace was dropped (never decided before expiry)")
+	}
+}
+
+func TestExpiryDoesNotDropHeldSampledTrace(t *testing.T) {
+	base := time.Unix(0, 0)
+	clk := base
+	eng := NewEngine(Config{
+		DecisionWait: time.Second,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+	eng.now = func() time.Time { return clk }
+
+	tid := TraceID{0x19}
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: tid, SpanID: SpanID{0x01}, StatusCode: "ERROR"},
+	}); err == nil {
+		t.Fatal("expected sink error")
+	}
+	clk = base.Add(2 * time.Second)
+	eng.expire()
+	if got := eng.NotSampled(); got != 0 {
+		t.Fatalf("NotSampled() = %d, want 0 (held sampled trace must survive expiry)", got)
+	}
+	if _, ok := eng.traces[tid]; !ok {
+		t.Fatalf("held sampled trace was expired")
+	}
+}
+
+func TestConsumeRetryAtSpanCapStillRedecides(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait:     time.Hour,
+		MaxTraces:        100,
+		MaxSpansPerTrace: 1,
+		Policies:         []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+
+	tid := TraceID{0x1b}
+	span := &Span{TraceID: tid, SpanID: SpanID{0x01}, StatusCode: "ERROR"}
+	if err := eng.Consume(context.Background(), []*Span{span}); err == nil {
+		t.Fatal("expected sink error")
+	}
+	eng.sink = sink
+	if err := eng.Consume(context.Background(), []*Span{span}); err != nil {
+		t.Fatalf("at-cap retry Consume: %v", err)
+	}
+	if len(sink.got) != 1 || len(sink.got[0]) != 1 {
+		t.Fatalf("at-cap retry must re-decide: got %d batches", len(sink.got))
+	}
+}
+
+func TestShutdownCancelledCtxStillForwardsSampled(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x1c}, SpanID: SpanID{0x01}, StatusCode: "ERROR"},
+	}); err == nil {
+		t.Fatal("expected sink error")
+	}
+	eng.sink = sink
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := eng.Shutdown(ctx); err != nil && err != context.Canceled {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if len(sink.got) != 1 {
+		t.Fatalf("cancelled Shutdown must still forward keep-worthy traces, got %d batches", len(sink.got))
+	}
+}
+
+func TestConsumeRetryDoesNotDuplicateSpans(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+
+	tid := TraceID{0x1a}
+	span := &Span{TraceID: tid, SpanID: SpanID{0x01}, StatusCode: "ERROR"}
+	if err := eng.Consume(context.Background(), []*Span{span}); err == nil {
+		t.Fatal("expected sink error")
+	}
+	eng.sink = sink
+	if err := eng.Consume(context.Background(), []*Span{span}); err != nil {
+		t.Fatalf("retry Consume: %v", err)
+	}
+	if len(sink.got) != 1 {
+		t.Fatalf("expected 1 forwarded batch, got %d", len(sink.got))
+	}
+	if got := len(sink.got[0]); got != 1 {
+		t.Fatalf("forwarded %d spans, want 1 (retry must not duplicate)", got)
 	}
 }
 

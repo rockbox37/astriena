@@ -8,6 +8,13 @@ pinned released versions.
 
 ## [Unreleased]
 
+### Fixed
+- Keep-worthy traces and accepted ClickHouse rows survive sink errors and
+  cancelled Collector shutdown: sampled traces stay held until forward
+  succeeds, pdata snapshots are copied rather than moved, `Close`/`Shutdown`
+  drain with a live context, and `quoteString` / ParseDSN no longer leak a
+  DSN or allow attribute-key breakout in ALTER literals.
+
 ### Changed
 - Sampling engine hot path is no longer O(n²) in buffer size. `Consume` now
   re-evaluates only the traces a batch touched (policies are pure functions of a
@@ -37,8 +44,8 @@ pinned released versions.
   `NotSampled()` counter distinct from the memory-safeguard `Dropped()` count.
 - ClickHouse BYOS write path. `internal/clickhouse` now owns the real batching
   and auto-schema logic behind an `Inserter` port — size/interval/Close-triggered
-  flushes, new-attribute-key diffing, and re-buffer-on-failure — kept pure and
-  unit-tested offline with a fake driver. The clickhouse-go/v2 binding lives in
+  flushes, new-attribute-key diffing, and writer-owned re-buffer-on-failure —
+  kept pure and unit-tested offline with a fake driver. The clickhouse-go/v2 binding lives in
   the `clickhouseexporter` adapter (`driver.go`): ZSTD-compressed prepared-batch
   inserts, base-schema creation, and per-attribute sparse columns
   (`DEFAULT attributes['k']`) with bloom-filter data-skipping indexes. The root

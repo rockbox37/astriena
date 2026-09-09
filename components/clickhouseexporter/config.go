@@ -7,9 +7,10 @@ import (
 	"go.opentelemetry.io/collector/config/configopaque"
 )
 
-// Config is the Collector configuration for the ClickHouse exporter. It maps
-// directly onto clickhouse.Config. The DSN points at the customer's own cluster
-// (BYOS) and is typically supplied via an env var.
+// Config is the Collector configuration for the ClickHouse exporter. DSN,
+// Database, and Table configure the driver-backed Inserter; BatchSize and
+// FlushInterval are forwarded to clickhouse.Writer. The DSN points at the
+// customer's own cluster (BYOS) and is typically supplied via an env var.
 //
 // DSN is configopaque.String so the embedded credential is redacted whenever the
 // effective configuration is marshaled (config dumps, zpages, validate output,

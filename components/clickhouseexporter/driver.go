@@ -2,6 +2,7 @@ package clickhouseexporter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,7 +28,9 @@ type chInserter struct {
 func newInserter(cfg *Config) (*chInserter, error) {
 	opts, err := clickhousego.ParseDSN(string(cfg.DSN))
 	if err != nil {
-		return nil, fmt.Errorf("clickhouse: parse dsn: %w", err)
+		// Do not wrap the parser error: clickhouse-go's url.Error can carry the
+		// raw DSN (including the password) in URL.
+		return nil, errors.New("clickhouse: invalid dsn")
 	}
 	database := cfg.Database
 	if database == "" {
@@ -162,7 +165,10 @@ func quoteIdent(s string) string {
 	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }
 
-// quoteString renders a ClickHouse string literal, escaping single quotes.
+// quoteString renders a ClickHouse string literal. Backslashes are escaped
+// first so a key containing `\` or `\xHH` cannot break out of the literal.
 func quoteString(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "\\'") + "'"
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	return "'" + s + "'"
 }
