@@ -55,10 +55,10 @@ sampling engine ([`internal/sampling`](internal/sampling)) and ClickHouse writer
 
 ## Visual language
 
-The mark is an original night-sky field: mixed-magnitude stars with faint,
-broken chart lines. It reads as sky and constellation before any letterform
-and is not a catalogued constellation. Night-sky tokens used across the SVG
-assets in [`docs/assets/`](docs/assets/):
+The mark pairs an irregular mixed-magnitude night sky with a custom-drawn,
+pale-gold display A. The letter uses tapered stems, flared feet, and a bowed
+crossbar; it is outlined directly in SVG and does not depend on a font file.
+Night-sky tokens used across the SVG assets in [`docs/assets/`](docs/assets/):
 
 | Token | Hex | Role |
 |---|---|---|

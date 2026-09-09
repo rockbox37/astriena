@@ -9,9 +9,9 @@ pinned released versions.
 ## [Unreleased]
 
 ### Changed
-- Redrew the constellation mark as an irregular, mixed-magnitude night sky with
-  faint broken chart lines; the original five-star A was too dominant
-  (follow-up to #9).
+- Redrew the mark as a custom pale-gold display A over an irregular,
+  mixed-magnitude night sky, removing the constellation links and badge
+  geometry from the earlier exploration (follow-up to #9).
 
 ### Fixed
 - Keep-worthy traces and accepted ClickHouse rows survive sink errors and

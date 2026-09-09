@@ -1,19 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" role="img" aria-labelledby="title desc">
   <title id="title">Astriena</title>
-  <desc id="desc">A tiny irregular star field with faint chart links and a nearly transparent circular frame.</desc>
+  <desc id="desc">A custom pale-gold A over a tiny irregular star field.</desc>
   <rect width="16" height="16" rx="3.5" fill="#0B1220"/>
-  <circle cx="8" cy="8" r="6" fill="none" stroke="#C4B48A" stroke-width=".35" stroke-opacity=".06"/>
-  <g fill="none" stroke="#C4B48A" stroke-width=".45" stroke-opacity=".10" stroke-linecap="round">
-    <path d="M2.6 5.2 L4.6 4 L7.8 4.8"/>
-    <path d="M9.8 7.8 L13.4 6.8"/>
-    <path d="M3.6 8.5 L6.2 11.3"/>
+  <g fill="#5C6B84">
+    <circle cx="2.5" cy="3" r=".28"/><circle cx="12.7" cy="2.4" r=".25"/>
+    <circle cx="2.2" cy="10.8" r=".22"/><circle cx="13.6" cy="11.5" r=".30"/>
+    <circle cx="4.4" cy="13.7" r=".24"/><circle cx="11.4" cy="14" r=".20"/>
   </g>
   <g fill="#E8D5A3">
-    <circle cx="4.6" cy="4" r="1.18"/><circle cx="9.8" cy="7.8" r="1.02"/>
-    <circle cx="6.2" cy="11.3" r=".92"/><circle cx="13.4" cy="6.8" r=".78"/>
-    <circle cx="10.8" cy="3" r=".67"/><circle cx="3.6" cy="8.5" r=".62"/>
-    <circle cx="12" cy="12.5" r=".48"/><circle cx="2.6" cy="5.2" r=".45"/>
+    <path d="M7.55 2 Q8 1.35 8.45 2.1 L6.1 13.5 H3.45 Q4.7 13 5.15 12.4 L7.15 2.7 Q7.35 2.2 7.55 2Z"/>
+    <path d="M7.8 2.2 Q8.3 1.35 8.8 2.4 L12.2 12.5 Q12.5 13.1 13.2 13.5 H10.6 L7.55 2.8Z"/>
+    <path d="M5.5 8.7 Q8 8.2 10.55 8.65 L11 10 Q8 9.5 5.05 10.1Z"/>
   </g>
-  <circle cx="4.6" cy="4" r=".35" fill="#F7F1E1"/>
-  <circle cx="9.8" cy="7.8" r=".30" fill="#F7F1E1"/>
 </svg>

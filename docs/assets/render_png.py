@@ -17,14 +17,9 @@ DIM = (0x5C, 0x6B, 0x84)
 
 # Keep these coordinates in sync with astriena-mark.svg's 64-unit viewBox.
 STARS = [
-    (18, 16, 2.25), (39, 31, 1.95), (25, 45, 1.72), (54, 27, 1.52),
-    (43, 12, 1.34), (14, 34, 1.18), (31, 19, 1.03), (18, 54, .94),
-    (9, 21, .82), (48, 46, .76), (34, 42, .66), (52, 16, .58),
-]
-LINES = [
-    ((9, 21), (18, 16)), ((18, 16), (31, 19)), ((31, 19), (43, 12)),
-    ((31, 19), (39, 31)), ((39, 31), (54, 27)),
-    ((18, 16), (14, 34)), ((14, 34), (25, 45)), ((25, 45), (18, 54)),
+    (18, 16, .88), (39, 31, .74), (25, 45, .68), (54, 27, .62),
+    (43, 12, .56), (14, 34, .51), (31, 19, .46), (18, 54, .43),
+    (9, 21, .39), (48, 46, .36), (34, 42, .33), (52, 16, .30),
 ]
 FIELD = [
     (6, 9, .28), (14, 6, .38), (25, 8, .24), (36, 5, .31),
@@ -36,14 +31,20 @@ FIELD = [
     (27, 14, .19), (39, 38, .24), (54, 15, .18), (35, 56, .18),
 ]
 
-STARS_16 = [
-    (4.6, 4, 1.18), (9.8, 7.8, 1.02), (6.2, 11.3, .92),
-    (13.4, 6.8, .78), (10.8, 3, .67), (3.6, 8.5, .62),
-    (12, 12.5, .48), (2.6, 5.2, .45),
+FIELD_16 = [
+    (2.5, 3, .28), (12.7, 2.4, .25), (2.2, 10.8, .22),
+    (13.6, 11.5, .30), (4.4, 13.7, .24), (11.4, 14, .20),
 ]
-LINES_16 = [
-    ((2.6, 5.2), (4.6, 4)), ((4.6, 4), (7.8, 4.8)),
-    ((9.8, 7.8), (13.4, 6.8)), ((3.6, 8.5), (6.2, 11.3)),
+
+A_SHAPES = [
+    [(30.2, 8.5), (33.1, 8.8), (24, 52), (14.2, 52), (20.4, 48.3), (28.6, 11)],
+    [(31.2, 9.2), (34.5, 10.2), (48, 48.5), (52.2, 52), (42.5, 52), (30.3, 11.2)],
+    [(22.2, 35.4), (41.7, 35.1), (43.4, 40), (20.6, 40.2)],
+]
+A_SHAPES_16 = [
+    [(7.55, 2), (8.45, 2.1), (6.1, 13.5), (3.45, 13.5), (5.15, 12.4), (7.15, 2.7)],
+    [(7.8, 2.2), (8.8, 2.4), (12.2, 12.5), (13.2, 13.5), (10.6, 13.5), (7.55, 2.8)],
+    [(5.5, 8.7), (10.55, 8.65), (11, 10), (5.05, 10.1)],
 ]
 
 
@@ -114,19 +115,28 @@ class Canvas:
                 if cov:
                     self.set(x, y, color, a * cov)
 
-    def ring(
-        self, cx: float, cy: float, r: float, width: float,
-        color: tuple[int, int, int], alpha: float,
-    ) -> None:
-        edge = width / 2
-        x0, x1 = int(cx - r - edge - 1), int(cx + r + edge + 2)
-        y0, y1 = int(cy - r - edge - 1), int(cy + r + edge + 2)
-        for y in range(y0, y1):
-            for x in range(x0, x1):
-                distance = abs(math.hypot(x + .5 - cx, y + .5 - cy) - r)
-                coverage = max(0.0, min(1.0, edge + .5 - distance))
-                if coverage:
-                    self.set(x, y, color, alpha * coverage)
+    def polygon(self, points: list[tuple[float, float]], color: tuple[int, int, int]) -> None:
+        min_x = int(min(x for x, _ in points) - 1)
+        max_x = int(max(x for x, _ in points) + 2)
+        min_y = int(min(y for _, y in points) - 1)
+        max_y = int(max(y for _, y in points) + 2)
+        samples = ((.25, .25), (.75, .25), (.25, .75), (.75, .75))
+        for y in range(min_y, max_y):
+            for x in range(min_x, max_x):
+                inside = 0
+                for sx, sy in samples:
+                    px, py = x + sx, y + sy
+                    hit = False
+                    j = len(points) - 1
+                    for i, (xi, yi) in enumerate(points):
+                        xj, yj = points[j]
+                        crosses = (yi > py) != (yj > py)
+                        if crosses and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
+                            hit = not hit
+                        j = i
+                    inside += hit
+                if inside:
+                    self.set(x, y, color, inside / len(samples))
 
     def line(
         self, x0: float, y0: float, x1: float, y1: float, width: float,
@@ -161,19 +171,16 @@ def png(canvas: Canvas, path: Path) -> None:
     )
 
 
-def draw_asterism(
-    c: Canvas, ox: float, oy: float, scale: float, line_w: float,
-    line_alpha: float = .07,
-) -> None:
-    c.ring(ox + 32 * scale, oy + 32 * scale, 24.5 * scale, .32 * scale, LINE, .05)
-    for (x0, y0), (x1, y1) in LINES:
-        c.line(
-            ox + x0 * scale, oy + y0 * scale,
-            ox + x1 * scale, oy + y1 * scale,
-            line_w, LINE, line_alpha,
-        )
+def draw_mark(c: Canvas, ox: float, oy: float, scale: float) -> None:
     for x, y, r in STARS:
         c.star(ox + x * scale, oy + y * scale, r * scale)
+    for shape in A_SHAPES:
+        c.polygon([(ox + x * scale, oy + y * scale) for x, y in shape], STAR)
+    c.line(
+        ox + 31.1 * scale, oy + 10.2 * scale,
+        ox + 20.1 * scale, oy + 49.1 * scale,
+        .45 * scale, CORE, .20,
+    )
 
 
 def render_mark(size: int, path: Path) -> None:
@@ -185,20 +192,17 @@ def render_mark(size: int, path: Path) -> None:
         if size <= 64 and r < .24:
             continue
         c.circle(x * scale, y * scale, max(.55, r * scale), DIM, .72)
-    draw_asterism(c, 0, 0, scale, .28 * scale)
+    draw_mark(c, 0, 0, scale)
     png(c, path)
 
 
 def render_mark_16(path: Path) -> None:
     c = Canvas(16, 16, BG)
     c.rounded_rect_mask(3.5)
-    c.ring(8, 8, 6, .35, LINE, .06)
-    for (x0, y0), (x1, y1) in LINES_16:
-        c.line(x0, y0, x1, y1, .45, LINE, .10)
-    for x, y, r in STARS_16:
-        c.circle(x, y, r, STAR)
-    c.circle(4.6, 4, .35, CORE)
-    c.circle(9.8, 7.8, .30, CORE)
+    for x, y, r in FIELD_16:
+        c.circle(x, y, r, DIM)
+    for shape in A_SHAPES_16:
+        c.polygon(shape, STAR)
     png(c, path)
 
 
@@ -217,7 +221,7 @@ def render_social(path: Path) -> None:
     for x, y, r in field:
         c.circle(x, y, r, DIM, 1.0)
     scale = 7.2
-    draw_asterism(c, 640 - 32 * scale, 320 - 31 * scale, scale, .28 * scale)
+    draw_mark(c, 640 - 32 * scale, 320 - 31 * scale, scale)
     png(c, path)
 
 
