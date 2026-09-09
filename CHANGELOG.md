@@ -16,6 +16,8 @@ pinned released versions.
   DSN or allow attribute-key breakout in ALTER literals.
 - ClickHouse prepared-batch `Abort` errors on a failed append are joined
   into the returned error instead of being discarded.
+- `Writer.Close` always closes the Inserter even when the final drain flush
+  fails, so a shutdown insert error cannot leak the ClickHouse connection.
 
 ### Changed
 - Sampling engine hot path is no longer O(n²) in buffer size. `Consume` now

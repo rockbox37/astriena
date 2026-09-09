@@ -298,15 +298,14 @@ func (w *Writer) Close(ctx context.Context) error {
 	w.inFlush.Wait()
 
 	flushErr := w.flush(context.Background())
-	if flushErr != nil {
-		if waitErr != nil {
-			return waitErr
-		}
-		return flushErr
-	}
+	// Always release the Inserter, even when the drain flush fails — otherwise
+	// a shutdown error leaks the ClickHouse connection.
 	closeErr := w.ins.Close()
 	if waitErr != nil {
 		return waitErr
+	}
+	if flushErr != nil {
+		return flushErr
 	}
 	return closeErr
 }

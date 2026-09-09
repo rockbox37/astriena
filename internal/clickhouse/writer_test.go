@@ -205,6 +205,22 @@ func TestWriteRetriesLeftoverBeforeRejecting(t *testing.T) {
 	}
 }
 
+func TestCloseFailedDrainStillClosesInserter(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 100})
+	ctx := context.Background()
+	if err := w.Write(ctx, []Row{{}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	want := errors.New("clickhouse unavailable")
+	ins.failInsert = want
+	if err := w.Close(ctx); !errors.Is(err, want) {
+		t.Fatalf("Close: got %v, want %v", err, want)
+	}
+	if !ins.closed {
+		t.Fatal("failed drain must still close the Inserter")
+	}
+}
+
 func TestCloseCancelledCtxStillDrains(t *testing.T) {
 	w, ins := newTestWriter(t, Config{BatchSize: 100})
 	ctx := context.Background()
