@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -13,6 +14,12 @@ import (
 
 	"github.com/rockbox37/astriena/internal/sampling"
 )
+
+func testProcessorSettings() processor.Settings {
+	return processor.Settings{
+		TelemetrySettings: componenttest.NewNopTelemetrySettings(),
+	}
+}
 
 func makeTrace(traceID [16]byte, status ptrace.StatusCode, name string) ptrace.Traces {
 	td := ptrace.NewTraces()
@@ -60,7 +67,7 @@ func TestConsumeTraces_KeepsErrorDefersOK(t *testing.T) {
 		MaxTraces:    100,
 		Policies:     []PolicyCfg{{Type: "status_code", Keep: "ERROR"}},
 	}
-	p, err := newProcessor(processor.Settings{}, cfg, sink)
+	p, err := newProcessor(testProcessorSettings(), cfg, sink)
 	if err != nil {
 		t.Fatalf("newProcessor: %v", err)
 	}
@@ -182,7 +189,7 @@ func TestConsumeTraces_OversizedBatchHonorsMaxSpansPerTrace(t *testing.T) {
 		MaxSpansPerTrace: 2,
 		Policies:         []PolicyCfg{{Type: "status_code", Keep: "ERROR"}},
 	}
-	p, err := newProcessor(processor.Settings{}, cfg, sink)
+	p, err := newProcessor(testProcessorSettings(), cfg, sink)
 	if err != nil {
 		t.Fatalf("newProcessor: %v", err)
 	}
@@ -211,7 +218,7 @@ func TestConsumeTraces_CrossBatchOccupancyCapsSnapshot(t *testing.T) {
 		MaxSpansPerTrace: 2,
 		Policies:         []PolicyCfg{{Type: "status_code", Keep: "ERROR"}},
 	}
-	p, err := newProcessor(processor.Settings{}, cfg, sink)
+	p, err := newProcessor(testProcessorSettings(), cfg, sink)
 	if err != nil {
 		t.Fatalf("newProcessor: %v", err)
 	}
