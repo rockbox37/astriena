@@ -87,9 +87,9 @@ type Config struct {
 	MaxTraces int
 	// MaxSpansPerTrace caps how many spans the engine buffers for a single
 	// trace — a safeguard against one runaway trace id growing without bound
-	// across batches. <=0 disables. This bounds the engine's per-trace domain
-	// spans; the opaque payload each span carries (Span.Raw) is the adapter's
-	// concern (see toEngineSpans).
+	// across batches. <=0 disables. The adapter enforces the same bound when
+	// copying pdata into Span.Raw (see toEngineSpans) so one ConsumeTraces
+	// batch cannot exceed the cap either.
 	MaxSpansPerTrace int
 	// Policies are evaluated in order; the first non-Pending decision wins.
 	Policies []Policy
@@ -342,6 +342,23 @@ func (e *Engine) Dropped() int64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.dropped
+}
+
+// BufferedSpanCounts returns how many domain spans the engine currently holds
+// for each requested id. Ids that are not buffered are omitted (count 0).
+func (e *Engine) BufferedSpanCounts(ids []TraceID) map[TraceID]int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[TraceID]int)
+	for _, id := range ids {
+		if _, seen := out[id]; seen {
+			continue
+		}
+		if t, ok := e.traces[id]; ok {
+			out[id] = len(t.Spans)
+		}
+	}
+	return out
 }
 
 // NotSampled returns the number of traces given the default NotSampled decision
