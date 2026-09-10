@@ -15,8 +15,10 @@ type fakeInserter struct {
 	addedKeys  [][]string
 	batches    [][]Row
 	closed     bool
-	failInsert error // returned once, then cleared
-	insertWait chan struct{} // when set, InsertBatch blocks until closed
+	failInsert    error         // returned once, then cleared
+	insertWait    chan struct{} // when set, InsertBatch blocks until closed
+	insertStarted chan struct{} // closed on first InsertBatch entry (before insertWait)
+	insertOnce    sync.Once
 }
 
 func (f *fakeInserter) EnsureBaseSchema(context.Context) error { f.ensured++; return nil }
@@ -30,12 +32,16 @@ func (f *fakeInserter) AddColumns(_ context.Context, keys []string) error {
 func (f *fakeInserter) InsertBatch(_ context.Context, rows []Row) error {
 	f.mu.Lock()
 	wait := f.insertWait
+	started := f.insertStarted
 	fail := f.failInsert
 	if f.failInsert != nil {
 		f.failInsert = nil
 	}
 	f.mu.Unlock()
 
+	if started != nil {
+		f.insertOnce.Do(func() { close(started) })
+	}
 	if wait != nil {
 		<-wait
 	}
@@ -398,7 +404,9 @@ func TestCloseWaitsForInFlightAsyncFlush(t *testing.T) {
 	w, ins := newTestWriter(t, Config{BatchSize: 2})
 	ctx := context.Background()
 	block := make(chan struct{})
+	started := make(chan struct{})
 	ins.insertWait = block
+	ins.insertStarted = started
 
 	done := make(chan struct{})
 	go func() {
@@ -408,13 +416,13 @@ func TestCloseWaitsForInFlightAsyncFlush(t *testing.T) {
 		close(done)
 	}()
 	<-done
+	<-started // async flush is in InsertBatch before Close runs
 
 	closeCh := make(chan error, 1)
 	go func() {
 		closeCh <- w.Close(ctx)
 	}()
 
-	time.Sleep(20 * time.Millisecond)
 	close(block)
 
 	if err := <-closeCh; err != nil {
@@ -429,7 +437,9 @@ func TestCloseDrainsAfterInFlightFailureRebuffers(t *testing.T) {
 	w, ins := newTestWriter(t, Config{BatchSize: 1})
 	ctx := context.Background()
 	block := make(chan struct{})
+	started := make(chan struct{})
 	ins.insertWait = block
+	ins.insertStarted = started
 	ins.failInsert = errors.New("transient")
 
 	done := make(chan struct{})
@@ -440,13 +450,13 @@ func TestCloseDrainsAfterInFlightFailureRebuffers(t *testing.T) {
 		close(done)
 	}()
 	<-done
+	<-started // in-flight insert blocked; Close will wait then retry drain
 
 	closeCh := make(chan error, 1)
 	go func() {
 		closeCh <- w.Close(ctx)
 	}()
 
-	time.Sleep(20 * time.Millisecond)
 	close(block) // first insert fails (failInsert cleared); Close drain retries
 
 	if err := <-closeCh; err != nil {

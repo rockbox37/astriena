@@ -271,7 +271,12 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 // enqueueFlush sends a flush job to the worker. When wait is true the caller
 // blocks until the job completes.
 func (w *Writer) enqueueFlush(ctx context.Context, batch []Row, wait bool) error {
-	job := flushJob{ctx: ctx, batch: batch}
+	jobCtx := ctx
+	if !wait {
+		// Async flushes outlive the Write caller; do not inherit a cancelable ctx.
+		jobCtx = context.Background()
+	}
+	job := flushJob{ctx: jobCtx, batch: batch}
 	if wait {
 		job.done = make(chan struct{})
 		job.errCh = make(chan error, 1)
