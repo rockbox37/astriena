@@ -81,8 +81,10 @@ pinned released versions.
 - Head-to-head benchmark module (`bench/`, `make bench-h2h`) comparing
   `astriena_sampler` to contrib `tailsamplingprocessor` v0.160.0 on the same
   generated `ptrace.Traces` and keep policy. At 20 000 in-flight traces,
-  adapter-level heap is a tie (~3400 B/trace, ratio ~1.00×); ingest
-  `ConsumeTraces` is ~2.25× faster on Astriena. The "fraction of the memory"
-  claim is not supported at the processor boundary — the adapter's pdata
-  snapshot dominates, and isolation's ~120–180 B/trace is ~5% of that figure.
+  adapter-level heap is a tie (~3409 vs ~3444 B/trace, ratio ~1.00×); ingest
+  `ConsumeTraces` is ~1.4× faster on Astriena (~4006 vs ~5647 ns/op on Apple
+  M4; ratios vary by machine and run). An earlier pre–lock-striping era showed
+  ~2.25× — see `docs/benchmarks.md`. The "fraction of the memory" claim is not
+  supported at the processor boundary — the adapter's pdata snapshot dominates,
+  and isolation's ~120–180 B/trace is ~5% of that figure.
 - `docs/architecture.md`.
