@@ -34,6 +34,17 @@ exporters:
     table: spans
 
 service:
+  # Astriena self-telemetry (sampler + ClickHouse writer stats). Scrape :8888/metrics
+  # with Prometheus — separate from customer trace data in the ClickHouse pipeline below.
+  telemetry:
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
   pipelines:
     traces:
       receivers: [otlp]

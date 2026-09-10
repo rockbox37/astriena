@@ -68,3 +68,9 @@ design — no ClickHouse service is required in CI.
   yet exist (code 81). Create the database first (as the integration test does
   via a connection to the DSN's default database), or point the DSN at an
   existing database.
+
+## Self-metrics
+
+ClickHouse writer stats (`astriena_clickhouse_*`) are exported via the Collector's
+`service.telemetry` Prometheus reader (see `config.yaml`, port `:8888/metrics`).
+They are Astriena operational metrics — not written to your ClickHouse trace table.
