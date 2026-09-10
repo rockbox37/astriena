@@ -21,28 +21,14 @@ describes the **opt-in integration test** that exercises the real
 ## Quick start (Docker)
 
 ```sh
-# Start a throwaway ClickHouse server
-docker run --rm -d --name astriena-ch-it \
-  -p 9000:9000 \
-  clickhouse/clickhouse-server:24
-
-export CLICKHOUSE_DSN=clickhouse://localhost:9000/default
-
-# Run integration tests (from repo root)
-make test-integration
-
-# Stop when done
-docker stop astriena-ch-it
-```
-
-Or use the Makefile helper:
-
-```sh
 make clickhouse-up
 export CLICKHOUSE_DSN=clickhouse://localhost:9000/default
 make test-integration
 make clickhouse-down
 ```
+
+`clickhouse-up` binds port 9000 to loopback only and waits until the server
+accepts connections.
 
 ## Environment
 
