@@ -1,0 +1,27 @@
+# Git and editor
+.git
+.github
+.idea
+.vscode
+
+# Build artifacts (rebuilt inside the image)
+_build/
+bin/
+dist/
+
+# Local / secrets
+.env
+.env.*
+config.local.yaml
+*.local
+
+# Docs and non-runtime assets
+docs/
+bench/
+*.md
+!README.md
+
+# OS noise
+.DS_Store
+Thumbs.db
+*.log
