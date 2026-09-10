@@ -14,8 +14,9 @@ help:
 	@echo "astriena make targets:"
 	@echo "  make test       - unit-test pure core and clickhouseexporter (offline)"
 	@echo "  make test-integration - ClickHouse exporter against a real cluster (needs CLICKHOUSE_DSN)"
-	@echo "  make clickhouse-up    - start a throwaway ClickHouse container for integration tests"
-	@echo "  make clickhouse-down  - stop the throwaway ClickHouse container"
+	@echo "  make clickhouse-up        - start a throwaway ClickHouse container for integration tests"
+	@echo "  make clickhouse-bootstrap - create the astriena database in the throwaway container"
+	@echo "  make clickhouse-down      - stop the throwaway ClickHouse container"
 	@echo "  make test-bench - cheap head-to-head verification (Collector/contrib; see docs/benchmarks.md)"
 	@echo "  make bench      - benchmark the sampling engine (offline; see docs/benchmarks.md)"
 	@echo "  make bench-h2h  - Astriena vs stock tail_sampling (Collector/contrib; 20k traces)"
@@ -35,7 +36,10 @@ test-integration:
 	@test -n "$$CLICKHOUSE_DSN" || (echo "CLICKHOUSE_DSN is required; see docs/clickhouse-integration.md" && exit 1)
 	go -C components/clickhouseexporter test -tags=integration -count=1 -v ./...
 
-.PHONY: clickhouse-up clickhouse-down
+CLICKHOUSE_CONTAINER ?= astriena-ch-it
+CLICKHOUSE_DB ?= astriena
+
+.PHONY: clickhouse-up clickhouse-bootstrap clickhouse-down
 clickhouse-up:
 	@docker rm -f astriena-ch-it 2>/dev/null || true
 	docker run -d --name astriena-ch-it -p 127.0.0.1:9000:9000 clickhouse/clickhouse-server:24
@@ -45,7 +49,15 @@ clickhouse-up:
 		sleep 1; \
 	done; \
 	if [ $$ready -eq 0 ]; then echo "ClickHouse failed to become ready within 30s" >&2; exit 1; fi
-	@echo "ClickHouse listening on localhost:9000 — export CLICKHOUSE_DSN=clickhouse://localhost:9000/default"
+	@echo "ClickHouse listening on localhost:9000 — run: make clickhouse-bootstrap"
+
+clickhouse-bootstrap:
+	@if ! docker inspect -f '{{.State.Running}}' $(CLICKHOUSE_CONTAINER) 2>/dev/null | grep -q true; then \
+		echo "ClickHouse container '$(CLICKHOUSE_CONTAINER)' is not running. Run: make clickhouse-up" >&2; \
+		exit 1; \
+	fi
+	docker exec $(CLICKHOUSE_CONTAINER) clickhouse-client --query "CREATE DATABASE IF NOT EXISTS $(CLICKHOUSE_DB)"
+	@echo "Database '$(CLICKHOUSE_DB)' ready — export ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/$(CLICKHOUSE_DB)"
 
 clickhouse-down:
 	docker rm -f astriena-ch-it
