@@ -2,6 +2,8 @@ package clickhouseexporter
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -33,7 +35,10 @@ func newExporter(_ context.Context, set exporter.Settings, cfg *Config) (exporte
 	}
 	metrics, err := newWriterMetrics(set.TelemetrySettings, w)
 	if err != nil {
-		_ = w.Close(context.Background())
+		closeErr := w.Close(context.Background())
+		if closeErr != nil {
+			return nil, errors.Join(fmt.Errorf("register writer metrics: %w", err), closeErr)
+		}
 		return nil, err
 	}
 	return &chExporter{w: w, metrics: metrics}, nil
