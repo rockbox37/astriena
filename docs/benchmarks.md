@@ -119,14 +119,16 @@ contrib `tailsamplingprocessor` and Astriena's `astriena_sampler` adapter.
 ```sh
 make test-bench          # cheap verification (skips the multi-second DecisionWait test)
 make bench-h2h           # full comparison: -benchtime=20000x
-# or:
+# or, for stable numbers (short runs vary; repeat 5 times):
+go test -C bench -run '^$' -bench . -benchmem -benchtime=20000x -count=5
+# cheap smoke:
 go test -C bench -short ./...
-go test -C bench -run '^$' -bench . -benchmem -benchtime=20000x
 ```
 
 pdata copies make 200 000 traces heavier than the isolation engine bench; **20 000**
 is the documented comparison size. Larger N (e.g. `-benchtime=50000x`) is fine
-if you want a quieter heap sample.
+if you want a quieter heap sample. Use **`-count=5`** (or higher) when comparing
+runs — ingest ns/op and heap B/trace can swing noticeably on a single pass.
 
 ### Workload and policy (identical on both sides)
 
@@ -171,17 +173,27 @@ payloads; they dominate here.
 
 ### Results (adapter-level)
 
-Apple M4, `go test -C bench -benchtime=20000x`. Reproduce with `make bench-h2h`.
-Absolute numbers are hardware-dependent — the ratios and the shape are the point.
+Representative local run on **Apple M4**, `main` @ `c44b685`, `go test -C bench
+-benchtime=20000x -count=5`. Reproduce with `make bench-h2h` (add `-count=5` for
+stable numbers). Absolute ns/op and heap figures vary by machine, Go version, and
+thermal state — **the ratios and the shape are the point**, not reproducing these
+exact integers.
 
 | Benchmark | Processor | Metric | Value |
 |---|---|---|---|
 | `BenchmarkBufferBytes` | Astriena | **heap B/trace** | **~3409** |
-| | stock `tail_sampling` | **heap B/trace** | **~3391** |
+| | stock `tail_sampling` | **heap B/trace** | **~3444** |
 | | | **ratio (stock / Astriena)** | **~1.00×** |
-| `BenchmarkConsume` | Astriena | throughput | ~2061 ns/op, 3326 B/op, 52 allocs/op |
-| | stock `tail_sampling` | throughput | ~4636 ns/op, 4915 B/op, 82 allocs/op |
-| | | **ingest latency ratio (stock / Astriena)** | **~2.25×** |
+| `BenchmarkConsume` | Astriena | throughput | ~4006 ns/op, 3935 B/op, 62 allocs/op |
+| | stock `tail_sampling` | throughput | ~5647 ns/op, 4915 B/op, 82 allocs/op |
+| | | **ingest latency ratio (stock / Astriena)** | **~1.4×** |
+
+Earlier runs on the same machine (pre lock-striping, PR #12 era) showed ~2.25×
+ingest advantage (~2061 vs ~4636 ns/op). That gap narrowed after **64-stripe lock
+striping** (#16): single-thread ingest pays ~10–15% overhead (+5 allocs/op) for
+finer-grained locking the h2h bench cannot exercise. The h2h benchmarks are
+**single-goroutine** — they measure per-call ingest cost, not mutex contention
+wins under concurrent load.
 
 ### What the ratio means (and does not)
 
@@ -189,20 +201,21 @@ At the processor boundary, in-flight heap is a **tie**. The README / architectur
 claim of "a fraction of the memory of the stock processor" is **not supported**
 by this run: Astriena's adapter holds a domain `Span` *and* a per-trace pdata
 snapshot (`toEngineSpans`), and that dual representation lands at essentially
-the same `HeapInuse` as stock's own copies + `idToTrace` map.
+the same `HeapInuse` as stock's own copies + `idToTrace` map. The memory wedge
+(~1.00×) is unchanged post-striping.
 
 The isolation engine bookkeeping (~120–180 B/trace) is ~5% of the ~3400 B
 adapter-level figure. The payload the exporter will write dominates both sides.
 A 1024-trace smoke sample can invert the ratio (heap noise); it stabilizes
 near 1.00× by 20 000 traces.
 
-Ingest is where Astriena is ahead today: about **2.25×** lower `ConsumeTraces`
-latency and fewer allocs (52 vs 82). That is the public API, with the
-async-vs-sync caveat above.
+Ingest is where Astriena is ahead today: on representative runs, about **~1.4×**
+lower `ConsumeTraces` latency and fewer allocs (62 vs 82). Do not cite the older
+~2.25× figure without noting hardware and pre-striping context — ratios vary by
+machine and run. That is the public API, with the async-vs-sync caveat above.
 
-This comparison was the gate before lock-striping / smarter eviction (now
-landed in #8). Those changes target mutex contention and cap behavior, not this
-memory ratio. A Rust hot path is also still not justified: this run does not
-show Go GC / memory losing to stock at the processor boundary. If a later
-customer-scale run does, that is the trigger; do not start a rewrite on the back
-of these numbers.
+Lock-striping / smarter eviction (landed in #8, striping refined in #16) target
+mutex contention and cap behavior under concurrent ingest, not this memory ratio.
+A Rust hot path is also still not justified: this run does not show Go GC / memory
+losing to stock at the processor boundary. If a later customer-scale run does,
+that is the trigger; do not start a rewrite on the back of these numbers.
