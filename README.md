@@ -37,9 +37,17 @@ Migrate in one line: point your existing Collector's OTLP exporter at Astriena.
 ```sh
 make test     # build & test the pure core (offline)
 make build    # assemble the astriena distribution into ./_build/astriena
+
+make clickhouse-up   # local ClickHouse on :9000 (skip if you already have a cluster)
+docker exec astriena-ch-it clickhouse-client --query "CREATE DATABASE IF NOT EXISTS astriena"
+
 ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/astriena \
   ./_build/astriena --config config.yaml
 ```
+
+The target database must exist before Astriena starts — clickhouse-go selects it on
+connect. On your own cluster, create it first (e.g. `CREATE DATABASE IF NOT EXISTS astriena`).
+See [docs/clickhouse-integration.md](docs/clickhouse-integration.md) for driver notes.
 
 Self-metrics (sampler drops, ClickHouse flush counters) are exposed on `:8888/metrics`
 via the `service.telemetry` Prometheus reader in `config.yaml` — not mixed into the
