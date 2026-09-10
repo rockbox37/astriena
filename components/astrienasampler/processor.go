@@ -16,16 +16,25 @@ import (
 type samplerProcessor struct {
 	engine           *sampling.Engine
 	maxSpansPerTrace int
+	metrics          *engineMetrics
 }
 
-func newProcessor(_ processor.Settings, cfg *Config, next consumer.Traces) (*samplerProcessor, error) {
+func newProcessor(set processor.Settings, cfg *Config, next consumer.Traces) (*samplerProcessor, error) {
 	eng := sampling.NewEngine(sampling.Config{
 		DecisionWait:     cfg.DecisionWait,
 		MaxTraces:        cfg.MaxTraces,
 		MaxSpansPerTrace: cfg.MaxSpansPerTrace,
 		Policies:         buildPolicies(cfg),
 	}, &consumerSink{next: next})
-	return &samplerProcessor{engine: eng, maxSpansPerTrace: cfg.MaxSpansPerTrace}, nil
+	metrics, err := newEngineMetrics(set.TelemetrySettings, eng)
+	if err != nil {
+		return nil, err
+	}
+	return &samplerProcessor{
+		engine:           eng,
+		maxSpansPerTrace: cfg.MaxSpansPerTrace,
+		metrics:          metrics,
+	}, nil
 }
 
 func (p *samplerProcessor) Capabilities() consumer.Capabilities {
@@ -38,7 +47,11 @@ func (p *samplerProcessor) Start(context.Context, component.Host) error {
 }
 
 func (p *samplerProcessor) Shutdown(ctx context.Context) error {
-	return p.engine.Shutdown(ctx)
+	err := p.engine.Shutdown(ctx)
+	if mErr := p.metrics.shutdown(); mErr != nil && err == nil {
+		err = mErr
+	}
+	return err
 }
 
 // ConsumeTraces translates incoming pdata into engine spans and feeds the engine.

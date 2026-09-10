@@ -67,6 +67,74 @@ func TestMaxTracesBoundsBuffer(t *testing.T) {
 	}
 }
 
+func TestDroppedSplitByReason(t *testing.T) {
+	eng := NewEngine(Config{
+		DecisionWait:     time.Hour,
+		MaxTraces:        1,
+		MaxSpansPerTrace: 1,
+		Policies:         []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x31}, StatusCode: "ERROR"},
+	}); err == nil {
+		t.Fatal("expected sink error")
+	}
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x32}, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume new trace at MaxTraces: %v", err)
+	}
+	if got := eng.DroppedMaxTraces(); got != 1 {
+		t.Fatalf("DroppedMaxTraces() = %d, want 1", got)
+	}
+	if got := eng.DroppedMaxSpansPerTrace(); got != 0 {
+		t.Fatalf("DroppedMaxSpansPerTrace() = %d, want 0", got)
+	}
+	if got := eng.Dropped(); got != 1 {
+		t.Fatalf("Dropped() = %d, want sum of split counters", got)
+	}
+
+	eng2 := NewEngine(Config{
+		DecisionWait:     time.Second,
+		MaxTraces:        100,
+		MaxSpansPerTrace: 1,
+		Policies:         []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, &recordingSink{})
+	tid := TraceID{0x33}
+	if err := eng2.Consume(context.Background(), []*Span{
+		{TraceID: tid, StatusCode: "OK"},
+		{TraceID: tid, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume per-trace overflow: %v", err)
+	}
+	if got := eng2.DroppedMaxSpansPerTrace(); got != 1 {
+		t.Fatalf("DroppedMaxSpansPerTrace() = %d, want 1", got)
+	}
+	if got := eng2.DroppedMaxTraces(); got != 0 {
+		t.Fatalf("DroppedMaxTraces() = %d, want 0", got)
+	}
+}
+
+func TestSampledSpansCountsForwarded(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait: time.Second,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x41}, StatusCode: "ERROR"},
+		{TraceID: TraceID{0x41}, StatusCode: "ERROR"},
+	}); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if got := eng.SampledSpans(); got != 2 {
+		t.Fatalf("SampledSpans() = %d, want 2", got)
+	}
+}
+
 func TestMaxSpansPerTraceBoundsSingleTrace(t *testing.T) {
 	sink := &recordingSink{}
 	// One trace id streaming many non-matching spans must not grow without bound.

@@ -150,11 +150,13 @@ type Engine struct {
 	// ingestMu serializes Consume against background expiry so batch-local gen/
 	// touched state and trace spans are not mutated concurrently. Stripe locks
 	// still split map contention from order-list expiry inside each caller.
-	ingestMu   sync.Mutex
-	orderMu    sync.Mutex
-	order      *list.List // *Trace in arrival order; front is oldest (see above)
-	dropped    atomic.Int64
-	notSampled atomic.Int64
+	ingestMu                sync.Mutex
+	orderMu                 sync.Mutex
+	order                   *list.List // *Trace in arrival order; front is oldest (see above)
+	droppedMaxTraces        atomic.Int64
+	droppedMaxSpansPerTrace atomic.Int64
+	notSampled              atomic.Int64
+	sampledSpans            atomic.Int64
 
 	// gen counts Consume calls; touched collects the traces a single Consume
 	// added spans to, so evaluation touches each such trace once (see Consume).
@@ -314,16 +316,44 @@ func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 	return first
 }
 
+// Stats holds monotonic engine counters for the adapter to export as metrics.
+type Stats struct {
+	DroppedMaxTraces        int64
+	DroppedMaxSpansPerTrace int64
+	NotSampled              int64
+	SampledSpans            int64
+}
+
+// Stats returns a snapshot of the engine's monotonic counters.
+func (e *Engine) Stats() Stats {
+	return Stats{
+		DroppedMaxTraces:        e.droppedMaxTraces.Load(),
+		DroppedMaxSpansPerTrace: e.droppedMaxSpansPerTrace.Load(),
+		NotSampled:              e.notSampled.Load(),
+		SampledSpans:            e.sampledSpans.Load(),
+	}
+}
+
 // Dropped returns the number of spans dropped by a memory safeguard — either
 // the MaxTraces cap (no evictable Pending trace remained at the trace-count
 // limit) or the MaxSpansPerTrace cap (a span past a trace's per-trace limit).
 // This counts memory-pressure drops only, not traces decided NotSampled by
 // policy, DecisionWait expiry, or MaxTraces eviction of an older Pending trace
 // — see NotSampled.
-// TODO(core): surface this as a Collector metric; split the two reasons if they
-// need to be distinguished.
 func (e *Engine) Dropped() int64 {
-	return e.dropped.Load()
+	return e.droppedMaxTraces.Load() + e.droppedMaxSpansPerTrace.Load()
+}
+
+// DroppedMaxTraces returns spans dropped because MaxTraces was reached and no
+// Pending trace could be evicted.
+func (e *Engine) DroppedMaxTraces() int64 {
+	return e.droppedMaxTraces.Load()
+}
+
+// DroppedMaxSpansPerTrace returns spans dropped because a trace exceeded
+// MaxSpansPerTrace.
+func (e *Engine) DroppedMaxSpansPerTrace() int64 {
+	return e.droppedMaxSpansPerTrace.Load()
 }
 
 // BufferedSpanCounts returns how many domain spans the engine currently holds
@@ -354,6 +384,12 @@ func (e *Engine) NotSampled() int64 {
 	return e.notSampled.Load()
 }
 
+// SampledSpans returns the number of spans forwarded to the sink after a
+// keep decision.
+func (e *Engine) SampledSpans() int64 {
+	return e.sampledSpans.Load()
+}
+
 // ingestSpan buffers one span and records its trace in touched when the span
 // changes a decision-relevant trace or must be re-decided after a sink retry.
 func (e *Engine) ingestSpan(now time.Time, s *Span, batchGen uint64, touched *[]*Trace) {
@@ -376,7 +412,7 @@ func (e *Engine) ingestSpan(now time.Time, s *Span, batchGen uint64, touched *[]
 			st.mu.Unlock()
 			if !e.evictOldestPendingLocked() {
 				e.orderMu.Unlock()
-				e.dropped.Add(1)
+				e.droppedMaxTraces.Add(1)
 				return
 			}
 			st.mu.Lock()
@@ -397,7 +433,7 @@ func (e *Engine) ingestSpan(now time.Time, s *Span, batchGen uint64, touched *[]
 // The caller must hold the trace's stripe lock.
 func (e *Engine) appendSpanUnderStripeLock(t *Trace, s *Span, batchGen uint64, touched *[]*Trace) {
 	if e.cfg.MaxSpansPerTrace > 0 && len(t.Spans) >= e.cfg.MaxSpansPerTrace {
-		e.dropped.Add(1)
+		e.droppedMaxSpansPerTrace.Add(1)
 		if t.touchedGen != batchGen {
 			e.markTouched(t, batchGen, touched)
 		}
@@ -478,6 +514,7 @@ func (e *Engine) decideLocked(ctx context.Context, t *Trace) error {
 		if err := e.sink.ConsumeSampled(ctx, t.Spans); err != nil {
 			return err
 		}
+		e.sampledSpans.Add(int64(len(t.Spans)))
 		e.removeLocked(t)
 		return nil
 	}
@@ -494,6 +531,7 @@ func (e *Engine) decideLocked(ctx context.Context, t *Trace) error {
 				t.decision = DecisionSampled
 				return err
 			}
+			e.sampledSpans.Add(int64(len(t.Spans)))
 		}
 		t.decision = d
 		e.removeLocked(t)
