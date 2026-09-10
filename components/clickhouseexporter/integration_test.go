@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -111,12 +112,14 @@ func waitForCount(t *testing.T, conn driver.Conn, db, table string, want uint64,
 	ctx := context.Background()
 	q := fmt.Sprintf("SELECT count() FROM %s", qualified(db, table))
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	for attempt := 0; time.Now().Before(deadline); attempt++ {
 		var count uint64
 		if err := conn.QueryRow(ctx, q).Scan(&count); err == nil && count >= want {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		for i := 0; i < 1<<min(attempt, 12); i++ {
+			runtime.Gosched()
+		}
 	}
 	t.Fatalf("timeout waiting for %d rows in %s", want, table)
 }
