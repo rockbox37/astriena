@@ -2,8 +2,10 @@ package clickhouseexporter
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"strings"
 
 	clickhousego "github.com/ClickHouse/clickhouse-go/v2"
@@ -86,9 +88,6 @@ ORDER BY (timestamp, trace_id)`, c.qualified())
 // defaulted from the attributes map, plus a bloom-filter data-skipping index so
 // high-cardinality lookups stay fast. All statements are IF NOT EXISTS, so this
 // is safe to call repeatedly and from concurrent flushes.
-//
-// TODO(core): two distinct keys can sanitize to the same column name (e.g.
-// "a.b" and "a-b"); disambiguate (hash suffix) before this is load-bearing.
 func (c *chInserter) AddColumns(ctx context.Context, keys []string) error {
 	tbl := c.qualified()
 	for _, k := range keys {
@@ -144,7 +143,9 @@ func (c *chInserter) Close() error { return c.conn.Close() }
 
 // attrColumn maps an attribute key to its sparse column name, replacing any
 // character that is not a letter, digit, or underscore so the identifier is
-// valid. e.g. "http.method" -> "attr_http_method".
+// valid, then appending a stable hash suffix so distinct keys that sanitize to
+// the same base (e.g. "a.b" and "a-b") always get distinct columns.
+// e.g. "http.method" -> "attr_http_method_a1b2c3d4".
 func attrColumn(key string) string {
 	var b strings.Builder
 	b.WriteString("attr_")
@@ -156,7 +157,19 @@ func attrColumn(key string) string {
 			b.WriteByte('_')
 		}
 	}
+	b.WriteByte('_')
+	b.WriteString(attrKeyHash(key))
 	return b.String()
+}
+
+// attrKeyHash returns the first 8 hex digits of FNV-1a 64 over the raw key.
+// Same key always yields the same suffix across process restarts.
+func attrKeyHash(key string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	var buf [8]byte
+	hex.Encode(buf[:], h.Sum(nil)[:4])
+	return string(buf[:])
 }
 
 // quoteIdent wraps a ClickHouse identifier in backticks, escaping any backtick.
