@@ -146,6 +146,21 @@ func sparseColumns(t *testing.T, conn driver.Conn, db, table string) []string {
 	return cols
 }
 
+func attrKeys(rows []clickhouse.Row) []string {
+	seen := make(map[string]bool)
+	var keys []string
+	for _, r := range rows {
+		for k := range r.Attributes {
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
 func bloomIndexes(t *testing.T, conn driver.Conn, db, table string) []string {
 	t.Helper()
 	ctx := context.Background()
@@ -207,8 +222,7 @@ func TestDriverRealCluster(t *testing.T) {
 		},
 	}
 
-	newKeys := []string{"service.name", "a.b", "a-b", "http.method"}
-	if err := fix.ins.AddColumns(fix.ctx, newKeys); err != nil {
+	if err := fix.ins.AddColumns(fix.ctx, attrKeys(rows)); err != nil {
 		t.Fatalf("AddColumns: %v", err)
 	}
 	if err := fix.ins.InsertBatch(fix.ctx, rows); err != nil {
@@ -299,16 +313,16 @@ func TestWriterAsyncFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-
-	if err := w.Start(fix.ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
 	closed := false
 	t.Cleanup(func() {
 		if !closed {
 			_ = w.Close(context.Background())
 		}
 	})
+
+	if err := w.Start(fix.ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 
 	row := clickhouse.Row{
 		Timestamp:  time.Now().UTC(),
