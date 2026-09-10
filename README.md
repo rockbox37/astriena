@@ -51,7 +51,8 @@ See [docs/clickhouse-integration.md](docs/clickhouse-integration.md) for driver 
 
 Self-metrics (sampler drops, ClickHouse flush counters) are exposed on `:8888/metrics`
 via the `service.telemetry` Prometheus reader in `config.yaml` — not mixed into the
-ClickHouse trace pipeline.
+ClickHouse trace pipeline. See [docs/observability.md](docs/observability.md) for the
+metric catalog and suggested alerts.
 
 > `make build` fetches the OpenTelemetry Collector modules pinned in
 > [`builder-config.yaml`](builder-config.yaml) (the `v0.160.0` / `v1.66.0` line)
