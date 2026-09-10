@@ -81,8 +81,8 @@ func buildPolicies(cfg *Config) []sampling.Policy {
 // received. Populate more domain fields here only when a policy needs them.
 //
 // Each source resource/scope block is copied once per trace per batch (not once
-// per span), and the snapshot is carried by a single span per trace so the
-// reassembly in fromEngineSpans emits it exactly once.
+// per span). The first in-cap span of each trace carries the snapshot so
+// fromEngineSpans emits it exactly once.
 //
 // maxSpans is MaxSpansPerTrace (<=0 disables). held is how many spans the
 // engine already buffers for each id. Copying stops once held+copied-this-batch
@@ -129,6 +129,10 @@ func toEngineSpans(td ptrace.Traces, maxSpans int, held map[sampling.TraceID]int
 				if !ok {
 					snap = ptrace.NewTraces()
 					snapByTrace[tid] = snap
+					// First in-cap span of this trace carries the snapshot.
+					// Traces entirely past the cap never reach here, so they
+					// keep Raw == nil and fromEngineSpans will not emit them.
+					domain.Raw = snap
 				}
 				key := groupKey{tid: tid, ri: ri, si: si}
 				dstScope, ok := scopeByGroup[key]
@@ -146,19 +150,6 @@ func toEngineSpans(td ptrace.Traces, maxSpans int, held map[sampling.TraceID]int
 				sp.CopyTo(dstScope.Spans().AppendEmpty())
 				copied[tid]++
 			}
-		}
-	}
-
-	// Attach each trace's snapshot to exactly one of its spans. Traces that
-	// were entirely past the cap have no snapshot and must not get a zero Raw.
-	seen := make(map[sampling.TraceID]bool, len(snapByTrace))
-	for _, s := range out {
-		if seen[s.TraceID] {
-			continue
-		}
-		seen[s.TraceID] = true
-		if snap, ok := snapByTrace[s.TraceID]; ok {
-			s.Raw = snap
 		}
 	}
 	return out
