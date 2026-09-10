@@ -85,6 +85,29 @@ func TestMaxSpansPerTraceBoundsSingleTrace(t *testing.T) {
 	}
 }
 
+func TestBufferedSpanCounts(t *testing.T) {
+	eng := NewEngine(Config{
+		DecisionWait: time.Second,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, &recordingSink{})
+
+	tid := TraceID{0x0A}
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: tid, SpanID: SpanID{0x01}, StatusCode: "OK"},
+		{TraceID: tid, SpanID: SpanID{0x02}, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	got := eng.BufferedSpanCounts([]TraceID{tid, {0x0B}, tid})
+	if got[tid] != 2 {
+		t.Fatalf("BufferedSpanCounts(%x) = %d, want 2", tid, got[tid])
+	}
+	if _, ok := got[TraceID{0x0B}]; ok {
+		t.Fatalf("missing id must be omitted from occupancy map")
+	}
+}
+
 func TestDecisionWaitDropsPendingTrace(t *testing.T) {
 	sink := &recordingSink{}
 	base := time.Unix(0, 0)
