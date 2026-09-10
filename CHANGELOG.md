@@ -9,9 +9,12 @@ pinned released versions.
 ## [Unreleased]
 
 ### Changed
-- Redrew the mark as a custom pale-gold display A over an irregular,
-  mixed-magnitude night sky, removing the constellation links and badge
-  geometry from the earlier exploration (follow-up to #9).
+- Set the pale-gold **A** mark and full **Astriena** wordmark in Cinzel
+  Decorative, with all branded SVG lettering converted to paths for portable
+  GitHub rendering. The unmodified font and SIL OFL 1.1 license are vendored
+  alongside a reproducible SVG/PNG renderer (follow-up to #9).
+- Removed constellation links and badge geometry in favor of an irregular,
+  mixed-magnitude night sky.
 
 ### Fixed
 - Keep-worthy traces and accepted ClickHouse rows survive sink errors and
