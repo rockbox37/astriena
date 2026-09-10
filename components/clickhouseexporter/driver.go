@@ -64,11 +64,15 @@ func openConnWithDatabase(ctx context.Context, opts *clickhousego.Options, datab
 		return conn, nil
 	}
 	if err := conn.Exec(ctx, "SELECT 1"); err != nil {
-		_ = conn.Close()
+		closeErr := conn.Close()
 		if isUnknownDatabase(err) {
-			return bootstrapAndOpen(ctx, opts, database)
+			bootConn, bootErr := bootstrapAndOpen(ctx, opts, database)
+			if bootErr != nil {
+				return nil, errors.Join(bootErr, closeErr)
+			}
+			return bootConn, nil
 		}
-		return nil, fmt.Errorf("clickhouse: verify database: %w", err)
+		return nil, errors.Join(fmt.Errorf("clickhouse: verify database: %w", err), closeErr)
 	}
 	return conn, nil
 }
