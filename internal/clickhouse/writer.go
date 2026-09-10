@@ -94,6 +94,9 @@ type Writer struct {
 
 	flushCh    chan flushJob
 	workerDone chan struct{}
+	flushMu    sync.Mutex // serializes flushCh send with Close
+
+	writers sync.WaitGroup // in-flight Write calls
 
 	stop chan struct{}
 	done chan struct{}
@@ -219,6 +222,10 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 		w.mu.Unlock()
 		return errWriterClosed
 	}
+	w.writers.Add(1)
+	w.mu.Unlock()
+	defer w.writers.Done()
+	w.mu.Lock()
 	// Reject only when a retry leftover is already occupying the cap. An
 	// oversized single Write with an empty buffer is flushed through so a
 	// Collector batch larger than BatchSize*4 is not rejected forever.
@@ -265,11 +272,14 @@ func (w *Writer) enqueueFlush(ctx context.Context, batch []Row, wait bool) error
 		job.done = make(chan struct{})
 		job.errCh = make(chan error, 1)
 	}
+	w.flushMu.Lock()
 	select {
 	case w.flushCh <- job:
 	case <-ctx.Done():
+		w.flushMu.Unlock()
 		return ctx.Err()
 	}
+	w.flushMu.Unlock()
 	if !wait {
 		return nil
 	}
@@ -285,11 +295,14 @@ func (w *Writer) enqueueFlush(ctx context.Context, batch []Row, wait bool) error
 // sync waits until all prior flush jobs complete without starting a new flush.
 func (w *Writer) sync(ctx context.Context) error {
 	job := flushJob{idle: true, done: make(chan struct{})}
+	w.flushMu.Lock()
 	select {
 	case w.flushCh <- job:
 	case <-ctx.Done():
+		w.flushMu.Unlock()
 		return ctx.Err()
 	}
+	w.flushMu.Unlock()
 	select {
 	case <-job.done:
 		return nil
@@ -394,6 +407,10 @@ func (w *Writer) Close(ctx context.Context) error {
 		}
 	}
 
+	// Wait for in-flight Write calls to finish enqueueing so Close does not
+	// close flushCh while a caller still holds a detached batch.
+	w.writers.Wait()
+
 	var flushErr error
 	for {
 		w.mu.Lock()
@@ -409,7 +426,9 @@ func (w *Writer) Close(ctx context.Context) error {
 		}
 	}
 
+	w.flushMu.Lock()
 	close(w.flushCh)
+	w.flushMu.Unlock()
 	<-w.workerDone
 
 	closeErr := w.ins.Close()

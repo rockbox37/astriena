@@ -359,6 +359,24 @@ func TestFlushQueueBackpressureBlocksWrite(t *testing.T) {
 	_ = ins
 }
 
+func TestCloseConcurrentWithWriteDoesNotPanic(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		w, _ := newTestWriter(t, Config{BatchSize: 1})
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				_ = w.Write(ctx, []Row{{}})
+			}
+		}()
+		time.Sleep(50 * time.Microsecond)
+		_ = w.Close(ctx)
+		wg.Wait()
+	}
+}
+
 func TestWorkerShutdownDrainsPendingFlush(t *testing.T) {
 	w, ins := newTestWriter(t, Config{BatchSize: 100})
 	ctx := context.Background()
