@@ -146,10 +146,13 @@ type Engine struct {
 	// sleeping. Defaults to time.Now.
 	now func() time.Time
 
-	stripes    [numStripes]stripe
+	stripes [numStripes]stripe
+	// ingestMu serializes Consume against background expiry so batch-local gen/
+	// touched state and trace spans are not mutated concurrently. Stripe locks
+	// still split map contention from order-list expiry inside each caller.
+	ingestMu   sync.Mutex
 	orderMu    sync.Mutex
 	order      *list.List // *Trace in arrival order; front is oldest (see above)
-	traceCount int
 	dropped    atomic.Int64
 	notSampled atomic.Int64
 
@@ -243,6 +246,8 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	e.ingestMu.Lock()
+	defer e.ingestMu.Unlock()
 	e.orderMu.Lock()
 	defer e.orderMu.Unlock()
 	// Drain: give every remaining trace a final policy pass (a full scan, but
@@ -263,6 +268,9 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 
 // Consume buffers a batch of spans and evaluates the traces they touch.
 func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
+	e.ingestMu.Lock()
+	defer e.ingestMu.Unlock()
+
 	// Snapshot the clock once so DecisionWait does not count sink I/O that
 	// holds orderMu: Arrived and expiry must agree on "now" for this batch.
 	now := e.now()
@@ -278,13 +286,12 @@ func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 	// Incoming ids are skipped: a due trace may be about to receive a late ERROR.
 	e.expireLockedSkip(now, false, incoming)
 	e.gen++
-	e.touched = e.touched[:0]
+	batchGen := e.gen
+	touched := e.touched[:0]
 	e.orderMu.Unlock()
 
 	for _, s := range spans {
-		if !e.ingestSpan(now, s) {
-			continue
-		}
+		e.ingestSpan(now, s, batchGen, &touched)
 	}
 
 	// Decide every touched trace before returning a sink error, so a later
@@ -294,12 +301,14 @@ func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 	e.orderMu.Lock()
 	defer e.orderMu.Unlock()
 	var first error
-	for _, t := range e.touched {
+	for _, t := range touched {
 		if err := e.decideLocked(ctx, t); err != nil && first == nil {
 			first = err
 		}
 	}
-	clear(e.touched)
+	for i := range touched {
+		touched[i] = nil
+	}
 	e.touched = e.touched[:0]
 	e.expireLocked(now, false)
 	return first
@@ -345,21 +354,17 @@ func (e *Engine) NotSampled() int64 {
 	return e.notSampled.Load()
 }
 
-// ingestSpan buffers one span and records its trace in touched. Returns false
-// when the span is dropped by a memory safeguard.
-func (e *Engine) ingestSpan(now time.Time, s *Span) bool {
+// ingestSpan buffers one span and records its trace in touched when the span
+// changes a decision-relevant trace or must be re-decided after a sink retry.
+func (e *Engine) ingestSpan(now time.Time, s *Span, batchGen uint64, touched *[]*Trace) {
 	idx := stripeIndex(s.TraceID)
 	st := &e.stripes[idx]
 
 	st.mu.Lock()
 	if t, ok := st.traces[s.TraceID]; ok {
-		appended, retry := e.appendSpanUnderStripeLock(t, s)
+		e.appendSpanUnderStripeLock(t, s, batchGen, touched)
 		st.mu.Unlock()
-		if !appended && !retry {
-			return false
-		}
-		e.markTouched(t)
-		return appended
+		return
 	}
 	st.mu.Unlock()
 
@@ -367,12 +372,12 @@ func (e *Engine) ingestSpan(now time.Time, s *Span) bool {
 	st.mu.Lock()
 	t, ok := st.traces[s.TraceID]
 	if !ok {
-		if e.cfg.MaxTraces > 0 && e.traceCount >= e.cfg.MaxTraces {
+		if e.cfg.MaxTraces > 0 && e.order.Len() >= e.cfg.MaxTraces {
 			st.mu.Unlock()
 			if !e.evictOldestPendingLocked() {
 				e.orderMu.Unlock()
 				e.dropped.Add(1)
-				return false
+				return
 			}
 			st.mu.Lock()
 			t, ok = st.traces[s.TraceID]
@@ -380,29 +385,23 @@ func (e *Engine) ingestSpan(now time.Time, s *Span) bool {
 		if !ok {
 			t = &Trace{ID: s.TraceID, Arrived: now}
 			st.traces[s.TraceID] = t
-			e.traceCount++
 			t.elem = e.order.PushBack(t)
 		}
 	}
-	appended, retry := e.appendSpanUnderStripeLock(t, s)
+	e.appendSpanUnderStripeLock(t, s, batchGen, touched)
 	st.mu.Unlock()
-	if !appended && !retry {
-		e.orderMu.Unlock()
-		return false
-	}
-	e.markTouchedLocked(t)
 	e.orderMu.Unlock()
-	return appended
 }
 
 // appendSpanUnderStripeLock appends s to t when under the per-trace cap.
-// The caller must hold the trace's stripe lock. Returns appended=false,
-// retry=true when the span is past the cap but the trace must still be
-// re-decided (sink retry).
-func (e *Engine) appendSpanUnderStripeLock(t *Trace, s *Span) (appended, retry bool) {
+// The caller must hold the trace's stripe lock.
+func (e *Engine) appendSpanUnderStripeLock(t *Trace, s *Span, batchGen uint64, touched *[]*Trace) {
 	if e.cfg.MaxSpansPerTrace > 0 && len(t.Spans) >= e.cfg.MaxSpansPerTrace {
 		e.dropped.Add(1)
-		return false, t.touchedGen != e.gen
+		if t.touchedGen != batchGen {
+			e.markTouched(t, batchGen, touched)
+		}
+		return
 	}
 	dup := false
 	if s.SpanID != (SpanID{}) {
@@ -416,19 +415,13 @@ func (e *Engine) appendSpanUnderStripeLock(t *Trace, s *Span) (appended, retry b
 	if !dup {
 		t.Spans = append(t.Spans, s)
 	}
-	return true, false
+	e.markTouched(t, batchGen, touched)
 }
 
-func (e *Engine) markTouched(t *Trace) {
-	e.orderMu.Lock()
-	e.markTouchedLocked(t)
-	e.orderMu.Unlock()
-}
-
-func (e *Engine) markTouchedLocked(t *Trace) {
-	if t.touchedGen != e.gen {
-		t.touchedGen = e.gen
-		e.touched = append(e.touched, t)
+func (e *Engine) markTouched(t *Trace, batchGen uint64, touched *[]*Trace) {
+	if t.touchedGen != batchGen {
+		t.touchedGen = batchGen
+		*touched = append(*touched, t)
 	}
 }
 
@@ -436,6 +429,8 @@ func (e *Engine) markTouchedLocked(t *Trace) {
 // buffered traces to a decision through it; it never evaluates policies or
 // touches the sink, so it cannot fail.
 func (e *Engine) expire() {
+	e.ingestMu.Lock()
+	defer e.ingestMu.Unlock()
 	e.orderMu.Lock()
 	defer e.orderMu.Unlock()
 	e.expireLocked(e.now(), false)
@@ -450,7 +445,6 @@ func (e *Engine) removeLocked(t *Trace) {
 	st.mu.Lock()
 	delete(st.traces, t.ID)
 	st.mu.Unlock()
-	e.traceCount--
 	if t.elem != nil {
 		e.order.Remove(t.elem)
 		t.elem = nil
