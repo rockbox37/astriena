@@ -203,7 +203,7 @@ func (w *Writer) Start(ctx context.Context) error {
 				w.mu.Unlock()
 				// Best-effort: if the worker queue is saturated, rows stay
 				// buffered until the next tick or size-triggered flush.
-				_ = w.enqueueFlush(context.Background(), nil, false)
+				_ = w.enqueueFlush(context.Background(), nil, false, true)
 			}
 		}
 	}()
@@ -235,7 +235,7 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 		// ingest until the ticker (or forever when FlushInterval is unset).
 		// Writer owns retry: flush errors are re-buffered; only errBufferFull
 		// signals the Collector when the cap is still exceeded.
-		if err := w.enqueueFlush(ctx, nil, true); err != nil {
+		if err := w.enqueueFlush(ctx, nil, true, false); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -260,7 +260,7 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 	}
 	w.mu.Unlock()
 	if batch != nil {
-		if err := w.enqueueFlush(ctx, batch, false); err != nil {
+		if err := w.enqueueFlush(ctx, batch, false, false); err != nil {
 			w.rebuffer(batch)
 			return err
 		}
@@ -269,8 +269,9 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 }
 
 // enqueueFlush sends a flush job to the worker. When wait is true the caller
-// blocks until the job completes.
-func (w *Writer) enqueueFlush(ctx context.Context, batch []Row, wait bool) error {
+// blocks until the job completes. bestEffort skips enqueue when the worker
+// queue is saturated (ticker path only).
+func (w *Writer) enqueueFlush(ctx context.Context, batch []Row, wait bool, bestEffort bool) error {
 	jobCtx := ctx
 	if !wait {
 		// Async flushes outlive the Write caller; do not inherit a cancelable ctx.
@@ -281,14 +282,36 @@ func (w *Writer) enqueueFlush(ctx context.Context, batch []Row, wait bool) error
 		job.done = make(chan struct{})
 		job.errCh = make(chan error, 1)
 	}
-	w.flushMu.Lock()
-	select {
-	case w.flushCh <- job:
-	case <-ctx.Done():
-		w.flushMu.Unlock()
-		return ctx.Err()
+	for {
+		w.mu.Lock()
+		if w.closed && !wait {
+			w.mu.Unlock()
+			if batch != nil {
+				w.rebuffer(batch)
+			}
+			return errWriterClosed
+		}
+		w.mu.Unlock()
+
+		w.flushMu.Lock()
+		select {
+		case w.flushCh <- job:
+			w.flushMu.Unlock()
+			goto sent
+		default:
+			w.flushMu.Unlock()
+			if bestEffort {
+				return nil
+			}
+		}
+		select {
+		case w.flushCh <- job:
+			goto sent
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	w.flushMu.Unlock()
+sent:
 	if !wait {
 		return nil
 	}
@@ -435,7 +458,7 @@ func (w *Writer) Close(ctx context.Context) error {
 		if empty {
 			break
 		}
-		err := w.enqueueFlush(context.Background(), nil, true)
+		err := w.enqueueFlush(context.Background(), nil, true, false)
 		if err != nil {
 			flushErr = err
 			break
