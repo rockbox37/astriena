@@ -61,23 +61,11 @@ func qualified(db, table string) string {
 	return quoteIdent(db) + "." + quoteIdent(table)
 }
 
-func ensureDatabase(t *testing.T, conn driver.Conn, db string) {
-	t.Helper()
-	if db == "" {
-		return
-	}
-	ctx := context.Background()
-	if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(db)); err != nil {
-		t.Fatalf("CREATE DATABASE %q: %v", db, err)
-	}
-}
-
 func setupIntegration(t *testing.T) integrationFixture {
 	t.Helper()
 	dsn := integrationDSN(t)
 	table := uniqueTable()
 	conn := openConn(t, dsn)
-	ensureDatabase(t, conn, integrationDB)
 	t.Cleanup(func() { dropTable(t, conn, integrationDB, table) })
 
 	cfg := &Config{
@@ -187,6 +175,45 @@ func bloomIndexes(t *testing.T, conn driver.Conn, db, table string) []string {
 		t.Fatalf("iterate indexes: %v", err)
 	}
 	return idx
+}
+
+// TestNewInserterCreatesDatabase verifies newInserter creates a missing database
+// before selecting it on connect (no manual bootstrap required).
+func TestNewInserterCreatesDatabase(t *testing.T) {
+	dsn := integrationDSN(t)
+	db := fmt.Sprintf("astriena_bootstrap_%d", time.Now().UnixNano())
+	table := uniqueTable()
+
+	cfg := &Config{
+		DSN:      configopaque.String(dsn),
+		Database: db,
+		Table:    table,
+	}
+	ins, err := newInserter(cfg)
+	if err != nil {
+		t.Fatalf("newInserter: %v", err)
+	}
+	t.Cleanup(func() { _ = ins.Close() })
+
+	conn := openConn(t, dsn)
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(db)); err != nil {
+			t.Fatalf("DROP DATABASE %q: %v", db, err)
+		}
+	})
+
+	ctx := context.Background()
+	if err := ins.EnsureBaseSchema(ctx); err != nil {
+		t.Fatalf("EnsureBaseSchema: %v", err)
+	}
+	if err := ins.InsertBatch(ctx, []clickhouse.Row{{
+		Timestamp: time.Now().UTC(), TraceID: "boot", SpanID: "span", Name: "boot",
+		StatusCode: "OK", DurationNS: 1,
+	}}); err != nil {
+		t.Fatalf("InsertBatch: %v", err)
+	}
+	waitForCount(t, conn, db, table, 1, 5*time.Second)
 }
 
 // TestDriverRealCluster exercises the clickhouse-go binding end-to-end: base

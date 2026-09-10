@@ -61,13 +61,11 @@ design — no ClickHouse service is required in CI.
 - **SQL `LIKE` underscore**: in ClickHouse `LIKE 'attr_%'` treats `_` as a
   single-character wildcard, so it matches the base `attributes` column too.
   Use `startsWith(name, 'attr_')` when listing sparse columns.
-- **Database must exist before connect**: `newInserter` sets
-  `Auth.Database` on the driver options before opening the connection.
-  clickhouse-go selects that database on connect, so `EnsureBaseSchema`'s
-  `CREATE DATABASE IF NOT EXISTS` fails when the configured database does not
-  yet exist (code 81). Create the database first (as the integration test does
-  via a connection to the DSN's default database), or point the DSN at an
-  existing database.
+- **Database auto-created on connect**: when a target database is configured
+  (via `database` or the DSN path), `newInserter` tries to connect directly
+  first. If ClickHouse returns error 81 (database missing), it connects via the
+  DSN default database, runs `CREATE DATABASE IF NOT EXISTS`, then retries.
+  Least-privilege users scoped only to an existing target database are unaffected.
 
 ## Self-metrics
 
