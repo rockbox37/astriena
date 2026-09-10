@@ -38,8 +38,8 @@ Migrate in one line: point your existing Collector's OTLP exporter at Astriena.
 make test     # build & test the pure core (offline)
 make build    # assemble the astriena distribution into ./_build/astriena
 
-make clickhouse-up   # local ClickHouse on :9000 (skip if you already have a cluster)
-docker exec astriena-ch-it clickhouse-client --query "CREATE DATABASE IF NOT EXISTS astriena"
+make clickhouse-up        # local ClickHouse on :9000 (skip if you already have a cluster)
+make clickhouse-bootstrap # create the astriena database (idempotent)
 
 ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/astriena \
   ./_build/astriena --config config.yaml
