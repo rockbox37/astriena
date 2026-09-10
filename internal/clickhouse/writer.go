@@ -14,14 +14,15 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // Config describes write-batching behavior. Connection identity (DSN, database,
 // table) lives on the Inserter, not here.
 type Config struct {
-	// BatchSize is the row count that triggers a synchronous flush. <=0 flushes
-	// every Write (no size-based batching).
+	// BatchSize is the row count that triggers a flush. <=0 flushes every Write
+	// (no size-based batching).
 	BatchSize int
 	// FlushInterval bounds how long buffered rows wait before a time-based flush.
 	// <=0 disables the background flush ticker (size- and Close-triggered only).
@@ -63,19 +64,24 @@ type Inserter interface {
 	Close() error
 }
 
+// Stats holds per-reason counters for flush retries and write rejection. Values
+// are monotonic for the lifetime of the Writer.
+type Stats struct {
+	FlushAttempts            uint64
+	FlushFailures            uint64
+	RowsRebuffered           uint64
+	WritesRejectedBufferFull uint64
+}
+
 // Writer batches Rows and flushes them through an Inserter. It is safe for
 // concurrent use.
 //
-// Flushes are triggered three ways: synchronously when the buffer reaches
-// BatchSize, on the FlushInterval ticker (for partial batches under light
-// load), and on Close. Before a batch is inserted, any attribute keys not yet
-// seen are pushed through AddColumns — the auto-schema path — so the sparse
-// columns exist before the rows referencing them land.
-//
-// TODO(core): the current design flushes inline on the caller's goroutine and
-// re-buffers a failed batch so the writer owns retry (Write returns nil). A
-// dedicated worker with bounded backpressure and per-reason drop metrics is
-// the next step once the driver binding is exercised against a real cluster.
+// Flushes are triggered three ways: when the buffer reaches BatchSize, on the
+// FlushInterval ticker (for partial batches under light load), and on Close.
+// All flushes run on a dedicated background worker so Write does not block on
+// ClickHouse I/O. Before a batch is inserted, any attribute keys not yet seen
+// are pushed through AddColumns — the auto-schema path — so the sparse columns
+// exist before the rows referencing them land.
 type Writer struct {
 	cfg Config
 	ins Inserter
@@ -85,20 +91,81 @@ type Writer struct {
 	known   map[string]bool // attribute keys already ensured via AddColumns
 	closed  bool
 	stopped bool
-	inFlush sync.WaitGroup
+
+	flushCh    chan flushJob
+	workerDone chan struct{}
 
 	stop chan struct{}
 	done chan struct{}
+
+	stats stats
 }
+
+type stats struct {
+	flushAttempts            atomic.Uint64
+	flushFailures            atomic.Uint64
+	rowsRebuffered           atomic.Uint64
+	writesRejectedBufferFull atomic.Uint64
+}
+
+type flushJob struct {
+	ctx   context.Context
+	batch []Row // nil: drain whatever is currently buffered
+	done  chan struct{}
+	errCh chan error // receives insertBatch result when the caller waits
+	idle  bool       // wait-for-drain sentinel; no I/O
+}
+
+const flushQueueDepth = 4
 
 // NewWriter constructs a Writer that flushes through ins. Call Start to ensure
 // the base schema and begin the flush ticker, and Close to drain and release.
 func NewWriter(cfg Config, ins Inserter) (*Writer, error) {
-	return &Writer{
-		cfg:   cfg,
-		ins:   ins,
-		known: make(map[string]bool),
-	}, nil
+	w := &Writer{
+		cfg:        cfg,
+		ins:        ins,
+		known:      make(map[string]bool),
+		flushCh:    make(chan flushJob, flushQueueDepth),
+		workerDone: make(chan struct{}),
+	}
+	go w.runWorker()
+	return w, nil
+}
+
+// Stats returns a snapshot of writer counters.
+func (w *Writer) Stats() Stats {
+	return Stats{
+		FlushAttempts:            w.stats.flushAttempts.Load(),
+		FlushFailures:            w.stats.flushFailures.Load(),
+		RowsRebuffered:           w.stats.rowsRebuffered.Load(),
+		WritesRejectedBufferFull: w.stats.writesRejectedBufferFull.Load(),
+	}
+}
+
+func (w *Writer) runWorker() {
+	defer close(w.workerDone)
+	for job := range w.flushCh {
+		w.executeFlush(job)
+	}
+}
+
+func (w *Writer) executeFlush(job flushJob) {
+	var err error
+	defer func() {
+		if job.errCh != nil {
+			job.errCh <- err
+		}
+		if job.done != nil {
+			close(job.done)
+		}
+	}()
+	if job.idle {
+		return
+	}
+	w.stats.flushAttempts.Add(1)
+	if err = w.insertBatch(job.ctx, job.batch); err != nil {
+		w.stats.flushFailures.Add(1)
+	}
 }
 
 // Start ensures the base schema exists and, when FlushInterval is set, launches
@@ -125,28 +192,24 @@ func (w *Writer) Start(ctx context.Context) error {
 			case <-w.stop:
 				return
 			case <-t.C:
-				// Account before I/O so Close cannot slip through inFlush==0
-				// between unlocking and starting the insert. Skip if Close
-				// already marked us closed — do not Add after Close's Wait.
 				w.mu.Lock()
 				if w.closed {
 					w.mu.Unlock()
 					continue
 				}
-				w.inFlush.Add(1)
 				w.mu.Unlock()
-				// Writer owns retry (re-buffer). A ticker flush must not fail
-				// the process or surface to the Collector ingest path.
-				_ = w.flushAndDone(context.Background())
+				// Best-effort: if the worker queue is saturated, rows stay
+				// buffered until the next tick or size-triggered flush.
+				_ = w.enqueueFlush(context.Background(), nil, false)
 			}
 		}
 	}()
 	return nil
 }
 
-// Write buffers rows and flushes synchronously once the buffer reaches
-// BatchSize. The caller blocking on a full-batch flush is the intended
-// backpressure signal to the upstream pipeline.
+// Write buffers rows and enqueues a flush once the buffer reaches BatchSize.
+// When the buffer is at its cap with a failed-batch leftover, Write blocks on
+// a synchronous flush before accepting more rows or returning errBufferFull.
 func (w *Writer) Write(ctx context.Context, rows []Row) error {
 	if len(rows) == 0 {
 		return nil
@@ -160,37 +223,79 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 	// oversized single Write with an empty buffer is flushed through so a
 	// Collector batch larger than BatchSize*4 is not rejected forever.
 	if limit := w.bufCapLocked(); limit > 0 && len(w.buf) > 0 && len(w.buf)+len(rows) > limit {
+		w.mu.Unlock()
 		// Retry the leftover first so a failed oversized flush does not stall
 		// ingest until the ticker (or forever when FlushInterval is unset).
-		w.inFlush.Add(1)
-		w.mu.Unlock()
-		// Writer owns retry: leftover stays in buf. Returning the flush
-		// error would make the Collector re-Consume and append the same rows.
-		_ = w.flushAndDone(ctx)
+		// Writer owns retry: flush errors are re-buffered; only errBufferFull
+		// signals the Collector when the cap is still exceeded.
+		_ = w.enqueueFlush(ctx, nil, true)
 		w.mu.Lock()
 		if w.closed {
 			w.mu.Unlock()
 			return errWriterClosed
 		}
 		if limit := w.bufCapLocked(); limit > 0 && len(w.buf) > 0 && len(w.buf)+len(rows) > limit {
+			w.stats.writesRejectedBufferFull.Add(1)
 			w.mu.Unlock()
 			return errBufferFull
 		}
 	}
 	w.buf = append(w.buf, rows...)
+	var batch []Row
 	ready := w.cfg.BatchSize <= 0 || len(w.buf) >= w.cfg.BatchSize
 	if ready {
-		// Account under the lock so Close cannot observe inFlush==0 in the
-		// gap after unlock and before InsertBatch.
-		w.inFlush.Add(1)
+		batch = w.buf
+		w.buf = nil
 	}
 	w.mu.Unlock()
-	if ready {
-		// Writer owns retry: flush re-buffers on failure. Returning that
-		// error would make the Collector re-Consume and append the same rows.
-		_ = w.flushAndDone(ctx)
+	if batch != nil {
+		if err := w.enqueueFlush(ctx, batch, false); err != nil {
+			w.rebuffer(batch)
+			return err
+		}
 	}
 	return nil
+}
+
+// enqueueFlush sends a flush job to the worker. When wait is true the caller
+// blocks until the job completes.
+func (w *Writer) enqueueFlush(ctx context.Context, batch []Row, wait bool) error {
+	job := flushJob{ctx: ctx, batch: batch}
+	if wait {
+		job.done = make(chan struct{})
+		job.errCh = make(chan error, 1)
+	}
+	select {
+	case w.flushCh <- job:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if !wait {
+		return nil
+	}
+	select {
+	case err := <-job.errCh:
+		<-job.done
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// sync waits until all prior flush jobs complete without starting a new flush.
+func (w *Writer) sync(ctx context.Context) error {
+	job := flushJob{idle: true, done: make(chan struct{})}
+	select {
+	case w.flushCh <- job:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-job.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // bufCapLocked is the hard memory bound on buffered rows. A failed flush is
@@ -203,25 +308,21 @@ func (w *Writer) bufCapLocked() int {
 	return 10_000
 }
 
-// flush takes the buffered rows, ensures any new attribute columns exist, and
-// inserts the batch. On failure the batch is returned to the buffer so a later
-// Write, ticker, or Close can retry — the writer owns that retry.
-func (w *Writer) flushAndDone(ctx context.Context) error {
-	defer w.inFlush.Done()
-	return w.flush(ctx)
-}
-
-func (w *Writer) flush(ctx context.Context) error {
-	w.mu.Lock()
-	if len(w.buf) == 0 {
+// insertBatch ensures attribute columns and inserts batch. When batch is nil the
+// current buffer is taken under lock. On failure the batch is re-buffered.
+func (w *Writer) insertBatch(ctx context.Context, batch []Row) error {
+	if batch == nil {
+		w.mu.Lock()
+		if len(w.buf) == 0 {
+			w.mu.Unlock()
+			return nil
+		}
+		batch = w.buf
+		w.buf = nil
 		w.mu.Unlock()
-		return nil
 	}
-	batch := w.buf
-	w.buf = nil
-	newKeys := w.newKeysLocked(batch)
-	w.mu.Unlock()
 
+	newKeys := w.newKeys(batch)
 	if len(newKeys) > 0 {
 		if err := w.ins.AddColumns(ctx, newKeys); err != nil {
 			w.rebuffer(batch)
@@ -241,11 +342,10 @@ func (w *Writer) flush(ctx context.Context) error {
 	return nil
 }
 
-// newKeysLocked returns the attribute keys in batch not yet ensured, deduped.
-// It does not mark them known — that happens only after AddColumns succeeds, so
-// a failed schema change is retried. Because it does not mark, two concurrent
-// flushes may both report the same key; AddColumns is idempotent to absorb that.
-func (w *Writer) newKeysLocked(batch []Row) []string {
+// newKeys returns the attribute keys in batch not yet ensured, deduped.
+func (w *Writer) newKeys(batch []Row) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	var out []string
 	seen := make(map[string]bool)
 	for _, r := range batch {
@@ -263,6 +363,7 @@ func (w *Writer) newKeysLocked(batch []Row) []string {
 // rebuffer prepends a failed batch back onto the buffer so no rows are lost on a
 // transient error. Ordering relative to concurrent writes is not preserved.
 func (w *Writer) rebuffer(batch []Row) {
+	w.stats.rowsRebuffered.Add(uint64(len(batch)))
 	w.mu.Lock()
 	w.buf = append(batch, w.buf...)
 	w.mu.Unlock()
@@ -293,13 +394,24 @@ func (w *Writer) Close(ctx context.Context) error {
 		}
 	}
 
-	// Always wait for in-flight flushes, then drain with Background. A
-	// cancelled caller ctx must not skip rows Write already accepted.
-	w.inFlush.Wait()
+	var flushErr error
+	for {
+		w.mu.Lock()
+		empty := len(w.buf) == 0
+		w.mu.Unlock()
+		if empty {
+			break
+		}
+		err := w.enqueueFlush(context.Background(), nil, true)
+		if err != nil {
+			flushErr = err
+			break
+		}
+	}
 
-	flushErr := w.flush(context.Background())
-	// Always release the Inserter, even when the drain flush fails — otherwise
-	// a shutdown error leaks the ClickHouse connection.
+	close(w.flushCh)
+	<-w.workerDone
+
 	closeErr := w.ins.Close()
 	if waitErr != nil {
 		return waitErr

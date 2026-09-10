@@ -3,16 +3,20 @@ package clickhouse
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 )
 
 // fakeInserter records calls and can be programmed to fail the next insert.
 type fakeInserter struct {
+	mu         sync.Mutex
 	ensured    int
 	addedKeys  [][]string
 	batches    [][]Row
 	closed     bool
 	failInsert error // returned once, then cleared
+	insertWait chan struct{} // when set, InsertBatch blocks until closed
 }
 
 func (f *fakeInserter) EnsureBaseSchema(context.Context) error { f.ensured++; return nil }
@@ -24,10 +28,19 @@ func (f *fakeInserter) AddColumns(_ context.Context, keys []string) error {
 }
 
 func (f *fakeInserter) InsertBatch(_ context.Context, rows []Row) error {
+	f.mu.Lock()
+	wait := f.insertWait
+	fail := f.failInsert
 	if f.failInsert != nil {
-		err := f.failInsert
 		f.failInsert = nil
-		return err
+	}
+	f.mu.Unlock()
+
+	if wait != nil {
+		<-wait
+	}
+	if fail != nil {
+		return fail
 	}
 	f.batches = append(f.batches, append([]Row(nil), rows...))
 	return nil
@@ -45,6 +58,13 @@ func newTestWriter(t *testing.T, cfg Config) (*Writer, *fakeInserter) {
 	return w, ins
 }
 
+func waitIdle(t *testing.T, w *Writer, ctx context.Context) {
+	t.Helper()
+	if err := w.sync(ctx); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+}
+
 func rowWithAttrs(attrs map[string]string) Row {
 	return Row{TraceID: "t", SpanID: "s", Attributes: attrs}
 }
@@ -56,6 +76,7 @@ func TestFlushesWhenBatchSizeReached(t *testing.T) {
 	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	if len(ins.batches) != 0 {
 		t.Fatalf("under BatchSize: got %d batches, want 0", len(ins.batches))
 	}
@@ -63,6 +84,7 @@ func TestFlushesWhenBatchSizeReached(t *testing.T) {
 	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	if len(ins.batches) != 1 || len(ins.batches[0]) != 4 {
 		t.Fatalf("at BatchSize: got %d batches (first size %v), want 1 batch of 4",
 			len(ins.batches), sizes(ins.batches))
@@ -79,6 +101,7 @@ func TestAutoSchemaOnlyAddsNewKeys(t *testing.T) {
 	if err := w.Write(ctx, []Row{rowWithAttrs(map[string]string{"a": "9", "c": "3"})}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
+	waitIdle(t, w, ctx)
 
 	if len(ins.addedKeys) != 2 {
 		t.Fatalf("AddColumns called %d times, want 2", len(ins.addedKeys))
@@ -123,8 +146,12 @@ func TestInsertErrorRebuffersForRetry(t *testing.T) {
 	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
 		t.Fatalf("Write should accept rows when the writer owns retry: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	if len(ins.batches) != 0 {
 		t.Fatalf("failed insert should record no batch, got %d", len(ins.batches))
+	}
+	if st := w.Stats(); st.FlushFailures != 1 || st.RowsRebuffered != 2 {
+		t.Fatalf("stats after failed flush: %+v", st)
 	}
 	// The rows must not be lost: a subsequent flush (driver recovered) inserts them.
 	if err := w.Close(ctx); err != nil {
@@ -169,21 +196,28 @@ func TestWriteRejectsWhenBufferFull(t *testing.T) {
 	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
 		t.Fatalf("Write 1: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	ins.failInsert = errors.New("still down")
 	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
 		t.Fatalf("Write 2: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	ins.failInsert = errors.New("still down")
 	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
 		t.Fatalf("Write 3: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	ins.failInsert = errors.New("still down")
 	if err := w.Write(ctx, []Row{{}, {}}); err != nil {
 		t.Fatalf("Write 4: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	ins.failInsert = errors.New("still down")
 	if err := w.Write(ctx, []Row{{}}); err != errBufferFull {
 		t.Fatalf("Write past cap: got %v, want errBufferFull", err)
+	}
+	if st := w.Stats(); st.WritesRejectedBufferFull != 1 {
+		t.Fatalf("buffer-full metric: got %d, want 1", st.WritesRejectedBufferFull)
 	}
 }
 
@@ -195,11 +229,13 @@ func TestWriteRetriesLeftoverBeforeRejecting(t *testing.T) {
 	if err := w.Write(ctx, make([]Row, 20)); err != nil {
 		t.Fatalf("oversized Write: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	// Leftover is 20 > cap 8. The next Write must flush that leftover rather
 	// than reject without retrying.
 	if err := w.Write(ctx, []Row{{}}); err != nil {
 		t.Fatalf("Write after leftover: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	if len(ins.batches) != 1 || len(ins.batches[0]) != 20 {
 		t.Fatalf("leftover not retried: got %v, want 1 batch of 20", sizes(ins.batches))
 	}
@@ -245,8 +281,95 @@ func TestWriteAcceptsOversizedBatchWhenBufferEmpty(t *testing.T) {
 	if err := w.Write(ctx, rows); err != nil {
 		t.Fatalf("oversized Write: %v", err)
 	}
+	waitIdle(t, w, ctx)
 	if len(ins.batches) != 1 || len(ins.batches[0]) != 20 {
 		t.Fatalf("oversized Write: got %v, want 1 batch of 20", sizes(ins.batches))
+	}
+}
+
+func TestWriteDoesNotBlockOnInsert(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 2})
+	ctx := context.Background()
+	block := make(chan struct{})
+	ins.insertWait = block
+
+	done := make(chan struct{})
+	go func() {
+		if err := w.Write(ctx, []Row{{}, {}}); err != nil {
+			t.Errorf("Write: %v", err)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Write returned while insert is still blocked — flush is async.
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Write blocked on slow InsertBatch; expected async flush worker")
+	}
+	close(block)
+	waitIdle(t, w, ctx)
+	if len(ins.batches) != 1 {
+		t.Fatalf("expected 1 batch after unblock, got %d", len(ins.batches))
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestFlushQueueBackpressureBlocksWrite(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 1})
+	ctx := context.Background()
+	block := make(chan struct{})
+	ins.insertWait = block
+
+	// Saturate the flush queue while the worker is blocked on InsertBatch.
+	for i := 0; i < flushQueueDepth+1; i++ {
+		if err := w.Write(ctx, []Row{{}}); err != nil {
+			t.Fatalf("Write %d: %v", i, err)
+		}
+	}
+
+	slow := make(chan struct{})
+	go func() {
+		// Next Write must block until queue drains.
+		if err := w.Write(ctx, []Row{{}}); err != nil {
+			t.Errorf("blocked Write: %v", err)
+		}
+		close(slow)
+	}()
+
+	select {
+	case <-slow:
+		t.Fatal("Write should block when flush queue is saturated")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(block)
+	waitIdle(t, w, ctx)
+
+	select {
+	case <-slow:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Write did not unblock after queue drained")
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_ = ins
+}
+
+func TestWorkerShutdownDrainsPendingFlush(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 100})
+	ctx := context.Background()
+	if err := w.Write(ctx, []Row{{}, {}, {}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if len(ins.batches) != 1 || len(ins.batches[0]) != 3 {
+		t.Fatalf("shutdown drain: got %v, want 1 batch of 3", sizes(ins.batches))
 	}
 }
 
