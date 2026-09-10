@@ -12,7 +12,10 @@ BUILDER_CFG := builder-config.yaml
 .PHONY: help
 help:
 	@echo "astriena make targets:"
-	@echo "  make test       - unit-test the pure core (offline)"
+	@echo "  make test       - unit-test pure core and clickhouseexporter (offline)"
+	@echo "  make test-integration - ClickHouse exporter against a real cluster (needs CLICKHOUSE_DSN)"
+	@echo "  make clickhouse-up    - start a throwaway ClickHouse container for integration tests"
+	@echo "  make clickhouse-down  - stop the throwaway ClickHouse container"
 	@echo "  make test-bench - cheap head-to-head verification (Collector/contrib; see docs/benchmarks.md)"
 	@echo "  make bench      - benchmark the sampling engine (offline; see docs/benchmarks.md)"
 	@echo "  make bench-h2h  - Astriena vs stock tail_sampling (Collector/contrib; 20k traces)"
@@ -25,6 +28,27 @@ help:
 .PHONY: test
 test:
 	go test ./internal/...
+	go -C components/clickhouseexporter test ./...
+
+.PHONY: test-integration
+test-integration:
+	@test -n "$$CLICKHOUSE_DSN" || (echo "CLICKHOUSE_DSN is required; see docs/clickhouse-integration.md" && exit 1)
+	go -C components/clickhouseexporter test -tags=integration -count=1 -v ./...
+
+.PHONY: clickhouse-up clickhouse-down
+clickhouse-up:
+	@docker rm -f astriena-ch-it 2>/dev/null || true
+	docker run -d --name astriena-ch-it -p 127.0.0.1:9000:9000 clickhouse/clickhouse-server:24
+	@echo "Waiting for ClickHouse..."
+	@ready=0; for i in $$(seq 1 30); do \
+		docker exec astriena-ch-it clickhouse-client --query "SELECT 1" >/dev/null 2>&1 && ready=1 && break; \
+		sleep 1; \
+	done; \
+	if [ $$ready -eq 0 ]; then echo "ClickHouse failed to become ready within 30s" >&2; exit 1; fi
+	@echo "ClickHouse listening on localhost:9000 — export CLICKHOUSE_DSN=clickhouse://localhost:9000/default"
+
+clickhouse-down:
+	docker rm -f astriena-ch-it
 
 .PHONY: test-bench
 test-bench:
