@@ -2,6 +2,8 @@ package clickhouseexporter
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -15,10 +17,11 @@ import (
 
 // chExporter wraps the pure clickhouse.Writer for the Collector pipeline.
 type chExporter struct {
-	w *clickhouse.Writer
+	w       *clickhouse.Writer
+	metrics *writerMetrics
 }
 
-func newExporter(_ context.Context, _ exporter.Settings, cfg *Config) (exporter.Traces, error) {
+func newExporter(_ context.Context, set exporter.Settings, cfg *Config) (exporter.Traces, error) {
 	ins, err := newInserter(cfg)
 	if err != nil {
 		return nil, err
@@ -30,7 +33,15 @@ func newExporter(_ context.Context, _ exporter.Settings, cfg *Config) (exporter.
 	if err != nil {
 		return nil, err
 	}
-	return &chExporter{w: w}, nil
+	metrics, err := newWriterMetrics(set.TelemetrySettings, w)
+	if err != nil {
+		closeErr := w.Close(context.Background())
+		if closeErr != nil {
+			return nil, errors.Join(fmt.Errorf("register writer metrics: %w", err), closeErr)
+		}
+		return nil, err
+	}
+	return &chExporter{w: w, metrics: metrics}, nil
 }
 
 func (e *chExporter) Capabilities() consumer.Capabilities {
@@ -42,7 +53,13 @@ func (e *chExporter) Start(ctx context.Context, _ component.Host) error {
 	return e.w.Start(ctx)
 }
 
-func (e *chExporter) Shutdown(ctx context.Context) error { return e.w.Close(ctx) }
+func (e *chExporter) Shutdown(ctx context.Context) error {
+	err := e.w.Close(ctx)
+	if mErr := e.metrics.shutdown(); mErr != nil && err == nil {
+		err = mErr
+	}
+	return err
+}
 
 // ConsumeTraces flattens sampled spans into rows and writes them to ClickHouse.
 func (e *chExporter) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
