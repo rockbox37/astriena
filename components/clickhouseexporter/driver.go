@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strings"
+	"time"
 
 	clickhousego "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -40,15 +41,27 @@ func newInserter(cfg *Config) (*chInserter, error) {
 	// Compress the wire batches; the customer pays for their own storage/egress.
 	opts.Compression = &clickhousego.Compression{Method: clickhousego.CompressionZSTD}
 
-	conn, err := openConnWithDatabase(context.Background(), opts, database)
+	ctx, cancel := dialTimeoutContext(opts)
+	defer cancel()
+	conn, err := openConnWithDatabase(ctx, opts, database)
 	if err != nil {
 		return nil, err
 	}
 	return &chInserter{conn: conn, database: database, table: cfg.Table}, nil
 }
 
+// dialTimeoutContext bounds exporter initialization against the DSN dial timeout.
+func dialTimeoutContext(opts *clickhousego.Options) (context.Context, context.CancelFunc) {
+	timeout := opts.DialTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return context.WithTimeout(context.Background(), timeout)
+}
+
 // openConnWithDatabase opens a connection to the target database, creating it
-// when ClickHouse reports error 81. A post-open SELECT verifies lazy connects.
+// when ClickHouse reports error 81. clickhouse-go may defer the handshake until
+// the first query, so SELECT 1 verifies the target database exists.
 func openConnWithDatabase(ctx context.Context, opts *clickhousego.Options, database string) (driver.Conn, error) {
 	if database != "" {
 		opts.Auth.Database = database
