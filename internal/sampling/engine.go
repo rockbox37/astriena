@@ -309,7 +309,7 @@ func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 	for i := range touched {
 		touched[i] = nil
 	}
-	e.touched = e.touched[:0]
+	e.touched = touched[:0]
 	e.expireLocked(now, false)
 	return first
 }
