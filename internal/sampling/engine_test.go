@@ -40,7 +40,8 @@ func TestStatusCodePolicyKeepsErrors(t *testing.T) {
 func TestMaxTracesBoundsBuffer(t *testing.T) {
 	sink := &recordingSink{}
 	// Policy never matches these spans, so both traces would otherwise stay
-	// buffered as Pending. MaxTraces=1 must admit the first and drop the second.
+	// buffered as Pending. MaxTraces=1 must evict the oldest Pending trace and
+	// admit the second rather than dropping the incoming span.
 	eng := NewEngine(Config{
 		DecisionWait: time.Second,
 		MaxTraces:    1,
@@ -54,8 +55,15 @@ func TestMaxTracesBoundsBuffer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
-	if got := eng.Dropped(); got != 1 {
-		t.Fatalf("Dropped() = %d, want 1 (second trace dropped at cap)", got)
+	if got := eng.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0 (oldest Pending evicted, not incoming span)", got)
+	}
+	if got := eng.NotSampled(); got != 1 {
+		t.Fatalf("NotSampled() = %d, want 1 (first trace evicted at cap)", got)
+	}
+	orderLen, traceLen := eng.bufferStateForTest()
+	if orderLen != 1 || traceLen != 1 {
+		t.Fatalf("buffer state order=%d traces=%d, want 1/1 (second trace retained)", orderLen, traceLen)
 	}
 }
 
@@ -237,17 +245,17 @@ func TestBufferIndexAndOrderStayConsistent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
-	if ln, mn := eng.order.Len(), len(eng.traces); ln != mn {
+	if ln, mn := eng.bufferStateForTest(); ln != mn {
 		t.Fatalf("after consume: order.Len()=%d, len(traces)=%d, want equal", ln, mn)
 	}
-	if mn := len(eng.traces); mn != 3 {
+	if _, mn := eng.bufferStateForTest(); mn != 3 {
 		t.Fatalf("expected 3 buffered pending traces, got %d", mn)
 	}
 
 	// Expire the rest and confirm both structures drain to empty.
 	clk = base.Add(2 * time.Second)
 	eng.expire()
-	if ln, mn := eng.order.Len(), len(eng.traces); ln != 0 || mn != 0 {
+	if ln, mn := eng.bufferStateForTest(); ln != 0 || mn != 0 {
 		t.Fatalf("after expiry: order.Len()=%d, len(traces)=%d, want 0/0", ln, mn)
 	}
 	if got := eng.NotSampled(); got != 3 {
@@ -282,7 +290,7 @@ func TestConsumeDecisionWaitIgnoresSinkIO(t *testing.T) {
 	if got := eng.NotSampled(); got != 0 {
 		t.Fatalf("NotSampled() = %d, want 0 (pending sibling must survive sink I/O)", got)
 	}
-	if _, ok := eng.traces[TraceID{0x12}]; !ok {
+	if counts := eng.BufferedSpanCounts([]TraceID{{0x12}}); counts[TraceID{0x12}] != 1 {
 		t.Fatalf("pending sibling was expired during sink I/O")
 	}
 }
@@ -385,7 +393,7 @@ func TestShutdownSinkErrorDoesNotForceDropKeepWorthy(t *testing.T) {
 	if got := eng.NotSampled(); got != 0 {
 		t.Fatalf("NotSampled() = %d, want 0 (keep-worthy trace must not be force-dropped)", got)
 	}
-	if _, ok := eng.traces[TraceID{0x17}]; !ok {
+	if counts := eng.BufferedSpanCounts([]TraceID{{0x17}}); counts[TraceID{0x17}] != 1 {
 		t.Fatalf("keep-worthy trace was removed after sink error")
 	}
 }
@@ -441,10 +449,11 @@ func TestSinkErrorDoesNotExpireUnevaluatedKeepWorthy(t *testing.T) {
 	if got := eng.NotSampled(); got != 0 {
 		t.Fatalf("NotSampled() = %d, want 0 (both ERROR traces must be held)", got)
 	}
-	if _, ok := eng.traces[TraceID{0x1d}]; !ok {
+	counts := eng.BufferedSpanCounts([]TraceID{{0x1d}, {0x1e}})
+	if counts[TraceID{0x1d}] != 1 {
 		t.Fatalf("first ERROR trace was dropped")
 	}
-	if _, ok := eng.traces[TraceID{0x1e}]; !ok {
+	if counts[TraceID{0x1e}] != 1 {
 		t.Fatalf("second ERROR trace was dropped (never decided before expiry)")
 	}
 }
@@ -470,7 +479,7 @@ func TestExpiryDoesNotDropHeldSampledTrace(t *testing.T) {
 	if got := eng.NotSampled(); got != 0 {
 		t.Fatalf("NotSampled() = %d, want 0 (held sampled trace must survive expiry)", got)
 	}
-	if _, ok := eng.traces[tid]; !ok {
+	if counts := eng.BufferedSpanCounts([]TraceID{tid}); counts[tid] != 1 {
 		t.Fatalf("held sampled trace was expired")
 	}
 }
@@ -543,6 +552,108 @@ func TestConsumeRetryDoesNotDuplicateSpans(t *testing.T) {
 	}
 	if got := len(sink.got[0]); got != 1 {
 		t.Fatalf("forwarded %d spans, want 1 (retry must not duplicate)", got)
+	}
+}
+
+func TestMaxTracesEvictsOldestPendingNotNewest(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    2,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x01}, StatusCode: "OK"},
+		{TraceID: TraceID{0x02}, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("fill buffer: %v", err)
+	}
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x03}, StatusCode: "ERROR"},
+	}); err != nil {
+		t.Fatalf("admit new trace at cap: %v", err)
+	}
+	if got := eng.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0", got)
+	}
+	if got := eng.NotSampled(); got != 1 {
+		t.Fatalf("NotSampled() = %d, want 1 (oldest Pending evicted)", got)
+	}
+	if len(sink.got) != 1 {
+		t.Fatalf("expected ERROR trace sampled, got %d batches", len(sink.got))
+	}
+	if sink.got[0][0].TraceID != (TraceID{0x03}) {
+		t.Fatalf("sampled trace id = %x, want 03", sink.got[0][0].TraceID)
+	}
+	counts := eng.BufferedSpanCounts([]TraceID{{0x01}, {0x02}, {0x03}})
+	if counts[TraceID{0x01}] != 0 {
+		t.Fatalf("oldest trace should have been evicted")
+	}
+	if counts[TraceID{0x02}] != 1 || counts[TraceID{0x03}] != 0 {
+		t.Fatalf("buffer counts = %v, want 02=1 and 03 forwarded", counts)
+	}
+}
+
+func TestMaxTracesDropsIncomingWhenNothingPending(t *testing.T) {
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    1,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x21}, StatusCode: "ERROR"},
+	}); err == nil {
+		t.Fatal("expected sink error")
+	}
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x22}, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume new trace: %v", err)
+	}
+	if got := eng.Dropped(); got != 1 {
+		t.Fatalf("Dropped() = %d, want 1 (held Sampled trace blocks eviction)", got)
+	}
+}
+
+func TestConcurrentConsumeMaintainsBufferConsistency(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait: time.Second,
+		MaxTraces:    256,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, sink)
+
+	const workers = 8
+	const spansPerWorker = 200
+	errCh := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		w := w
+		go func() {
+			for i := 0; i < spansPerWorker; i++ {
+				var tid TraceID
+				tid[0] = byte(w)
+				tid[1] = byte(i >> 8)
+				tid[2] = byte(i)
+				if err := eng.Consume(context.Background(), []*Span{
+					{TraceID: tid, SpanID: SpanID{byte(i)}, StatusCode: "OK"},
+				}); err != nil {
+					errCh <- err
+					return
+				}
+			}
+			errCh <- nil
+		}()
+	}
+	for w := 0; w < workers; w++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("worker Consume: %v", err)
+		}
+	}
+	orderLen, traceLen := eng.bufferStateForTest()
+	if orderLen != traceLen {
+		t.Fatalf("order.Len()=%d, trace count=%d, want equal under concurrency", orderLen, traceLen)
 	}
 }
 

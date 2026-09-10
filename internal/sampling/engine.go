@@ -14,7 +14,9 @@ package sampling
 import (
 	"container/list"
 	"context"
+	"encoding/binary"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -95,6 +97,18 @@ type Config struct {
 	Policies []Policy
 }
 
+const numStripes = 64
+
+type stripe struct {
+	mu     sync.Mutex
+	traces map[TraceID]*Trace
+}
+
+func stripeIndex(id TraceID) int {
+	h := binary.BigEndian.Uint64(id[8:])
+	return int(h % uint64(numStripes))
+}
+
 // Engine buffers spans by trace id, applies policies, and forwards the spans of
 // sampled traces to the Sink.
 //
@@ -106,7 +120,9 @@ type Config struct {
 // traces leave the buffer instead of piling up until MaxTraces evicts new ones.
 //
 // Two structures keep the hot path off O(n) per batch:
-//   - traces indexes buffered traces by id for O(1) lookup on ingest.
+//   - traces indexes buffered traces by id for O(1) lookup on ingest, sharded
+//     across numStripes lock stripes so concurrent batches contend on separate
+//     mutexes instead of one global lock.
 //   - order is a FIFO list of the same traces in arrival order. Because every
 //     trace shares one DecisionWait, arrival order is deadline order: expiry pops
 //     the front while it is due and stops at the first trace that is not — O(k)
@@ -118,13 +134,11 @@ type Config struct {
 // gained no span cannot change its decision. Together these make a stream of
 // batches O(total spans) rather than O(n^2) in buffer size.
 //
-// MaxTraces is enforced as a hard memory bound (new traces are dropped once the
-// cap is reached). TODO(core): what remains for the production hot path is a
-// sharded / lock-striped buffer so a single mutex is not the bottleneck under
-// load (this is where the throughput wedge is won or lost) and smarter eviction
-// than drop-newest at the cap (e.g. evict the oldest still-Pending trace, now
-// cheap to find at the front of order). Benchmark against the stock tail_sampling
-// processor before optimizing further — see docs/benchmarks.md.
+// MaxTraces is enforced as a hard memory bound. When the cap is reached and a
+// new trace arrives, the engine evicts the oldest still-Pending trace from the
+// front of order (O(1) lookup) rather than dropping the incoming span. If every
+// buffered trace is non-Pending (e.g. held at DecisionSampled after a sink
+// failure), the new span is dropped as before.
 type Engine struct {
 	cfg  Config
 	sink Sink
@@ -132,11 +146,12 @@ type Engine struct {
 	// sleeping. Defaults to time.Now.
 	now func() time.Time
 
-	mu         sync.Mutex
-	traces     map[TraceID]*Trace
+	stripes    [numStripes]stripe
+	orderMu    sync.Mutex
 	order      *list.List // *Trace in arrival order; front is oldest (see above)
-	dropped    int64
-	notSampled int64
+	traceCount int
+	dropped    atomic.Int64
+	notSampled atomic.Int64
 
 	// gen counts Consume calls; touched collects the traces a single Consume
 	// added spans to, so evaluation touches each such trace once (see Consume).
@@ -154,22 +169,25 @@ type Engine struct {
 // NewEngine constructs an Engine that forwards sampled traces to sink. Call
 // Start to run background expiry and Shutdown to stop it and drain the buffer.
 func NewEngine(cfg Config, sink Sink) *Engine {
-	return &Engine{
-		cfg:    cfg,
-		sink:   sink,
-		now:    time.Now,
-		traces: make(map[TraceID]*Trace),
-		order:  list.New(),
+	e := &Engine{
+		cfg:   cfg,
+		sink:  sink,
+		now:   time.Now,
+		order: list.New(),
 	}
+	for i := range e.stripes {
+		e.stripes[i].traces = make(map[TraceID]*Trace)
+	}
+	return e
 }
 
 // Start launches the background ticker that forces decisions on traces whose
 // DecisionWait has elapsed even when no new spans arrive. It is a no-op when
 // DecisionWait is unset (time-based expiry disabled) or already running.
 func (e *Engine) Start() {
-	e.mu.Lock()
+	e.orderMu.Lock()
 	if e.cfg.DecisionWait <= 0 || e.stop != nil {
-		e.mu.Unlock()
+		e.orderMu.Unlock()
 		return
 	}
 	interval := e.cfg.DecisionWait / 2
@@ -179,7 +197,7 @@ func (e *Engine) Start() {
 	e.stopped = false
 	e.stop = make(chan struct{})
 	e.done = make(chan struct{})
-	e.mu.Unlock()
+	e.orderMu.Unlock()
 	go func() {
 		defer close(e.done)
 		t := time.NewTicker(interval)
@@ -202,21 +220,21 @@ func (e *Engine) Start() {
 // remaining buffered trace: any still Pending is dropped (the default). It
 // returns ctx.Err() if ctx is cancelled while waiting for the ticker to stop.
 func (e *Engine) Shutdown(ctx context.Context) error {
-	e.mu.Lock()
+	e.orderMu.Lock()
 	stop, done := e.stop, e.done
 	if stop != nil && !e.stopped {
 		e.stopped = true
 		close(stop)
 	}
-	e.mu.Unlock()
+	e.orderMu.Unlock()
 
 	var waitErr error
 	if stop != nil {
 		select {
 		case <-done:
-			e.mu.Lock()
+			e.orderMu.Lock()
 			e.stop = nil
-			e.mu.Unlock()
+			e.orderMu.Unlock()
 		case <-ctx.Done():
 			// Best-effort drain below even if the ticker has not acknowledged
 			// stop. Leave stop set so Start stays a no-op and a second
@@ -225,8 +243,8 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.orderMu.Lock()
+	defer e.orderMu.Unlock()
 	// Drain: give every remaining trace a final policy pass (a full scan, but
 	// only once, at shutdown) so a Sampled one is still forwarded, then force the
 	// default NotSampled decision on whatever stays Pending. Skip the force-drop
@@ -245,73 +263,27 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 
 // Consume buffers a batch of spans and evaluates the traces they touch.
 func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	// Snapshot the clock once so DecisionWait does not count sink I/O that
-	// holds this lock: Arrived and expiry must agree on "now" for this batch.
+	// holds orderMu: Arrived and expiry must agree on "now" for this batch.
 	now := e.now()
 
-	// Free cap slots taken by due Pending traces this batch cannot refresh,
-	// so MaxTraces does not drop a new keep-worthy id that would have fit.
-	// Incoming ids are skipped: a due trace may be about to receive a late ERROR.
 	incoming := make(map[TraceID]struct{}, len(spans))
 	for _, s := range spans {
 		incoming[s.TraceID] = struct{}{}
 	}
-	e.expireLockedSkip(now, false, incoming)
 
-	// Collect the traces this batch adds spans to. Only these can change decision
-	// (policies are pure functions of a trace's spans), so only these are
-	// evaluated below — the buffer at large is left untouched.
+	e.orderMu.Lock()
+	// Free cap slots taken by due Pending traces this batch cannot refresh,
+	// so MaxTraces does not drop a new keep-worthy id that would have fit.
+	// Incoming ids are skipped: a due trace may be about to receive a late ERROR.
+	e.expireLockedSkip(now, false, incoming)
 	e.gen++
 	e.touched = e.touched[:0]
+	e.orderMu.Unlock()
 
 	for _, s := range spans {
-		t, ok := e.traces[s.TraceID]
-		if !ok {
-			// MaxTraces is a hard safeguard against unbounded buffer growth: once
-			// the in-flight cap is reached, drop spans for new traces rather than
-			// grow without bound. Spans for traces already buffered still append.
-			if e.cfg.MaxTraces > 0 && len(e.traces) >= e.cfg.MaxTraces {
-				e.dropped++
-				continue
-			}
-			t = &Trace{ID: s.TraceID, Arrived: now}
-			e.traces[s.TraceID] = t
-			// Link at the back: traces enter order oldest-first, which is also
-			// deadline order since they share one DecisionWait (see expireLocked).
-			t.elem = e.order.PushBack(t)
-		}
-		// Bound spans for a single trace: one runaway trace id must not grow
-		// without limit even though the trace-count cap is not reached.
-		if e.cfg.MaxSpansPerTrace > 0 && len(t.Spans) >= e.cfg.MaxSpansPerTrace {
-			e.dropped++
-			// An existing trace at the cap must still be re-decided (sink
-			// retry) when the retried batch is entirely past the cap.
-			if ok && t.touchedGen != e.gen {
-				t.touchedGen = e.gen
-				e.touched = append(e.touched, t)
-			}
+		if !e.ingestSpan(now, s) {
 			continue
-		}
-		dup := false
-		if s.SpanID != (SpanID{}) {
-			for _, existing := range t.Spans {
-				if existing.SpanID == s.SpanID {
-					dup = true
-					break
-				}
-			}
-		}
-		if !dup {
-			t.Spans = append(t.Spans, s)
-		}
-		// A retried Consume must still re-decide (sink retry) even when every
-		// span was already buffered.
-		if t.touchedGen != e.gen {
-			t.touchedGen = e.gen
-			e.touched = append(e.touched, t)
 		}
 	}
 
@@ -319,6 +291,8 @@ func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 	// keep-worthy trace is marked Sampled-held instead of left Pending for
 	// DecisionWait to default-drop. Always expire after decide-all:
 	// expireLocked skips DecisionSampled, so keep-worthy traces stay held.
+	e.orderMu.Lock()
+	defer e.orderMu.Unlock()
 	var first error
 	for _, t := range e.touched {
 		if err := e.decideLocked(ctx, t); err != nil && first == nil {
@@ -332,67 +306,178 @@ func (e *Engine) Consume(ctx context.Context, spans []*Span) error {
 }
 
 // Dropped returns the number of spans dropped by a memory safeguard — either
-// the MaxTraces cap (a new trace at the trace-count limit) or the
-// MaxSpansPerTrace cap (a span past a trace's per-trace limit). This counts
-// memory-pressure drops only, not traces decided NotSampled by policy or by
-// DecisionWait expiry — see NotSampled.
+// the MaxTraces cap (no evictable Pending trace remained at the trace-count
+// limit) or the MaxSpansPerTrace cap (a span past a trace's per-trace limit).
+// This counts memory-pressure drops only, not traces decided NotSampled by
+// policy, DecisionWait expiry, or MaxTraces eviction of an older Pending trace
+// — see NotSampled.
 // TODO(core): surface this as a Collector metric; split the two reasons if they
 // need to be distinguished.
 func (e *Engine) Dropped() int64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.dropped
+	return e.dropped.Load()
 }
 
 // BufferedSpanCounts returns how many domain spans the engine currently holds
 // for each requested id. Ids that are not buffered are omitted (count 0).
 func (e *Engine) BufferedSpanCounts(ids []TraceID) map[TraceID]int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	out := make(map[TraceID]int)
 	for _, id := range ids {
 		if _, seen := out[id]; seen {
 			continue
 		}
-		if t, ok := e.traces[id]; ok {
+		idx := stripeIndex(id)
+		st := &e.stripes[idx]
+		st.mu.Lock()
+		if t, ok := st.traces[id]; ok {
 			out[id] = len(t.Spans)
 		}
+		st.mu.Unlock()
 	}
 	return out
 }
 
 // NotSampled returns the number of traces given the default NotSampled decision
-// because DecisionWait elapsed with no policy choosing to keep them — the
-// engine's normal ingestion-reduction path, distinct from the memory-safeguard
-// drops counted by Dropped.
+// because DecisionWait elapsed with no policy choosing to keep them, or because
+// MaxTraces pressure evicted the oldest still-Pending trace — the engine's
+// normal ingestion-reduction path, distinct from the memory-safeguard drops
+// counted by Dropped.
 func (e *Engine) NotSampled() int64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.notSampled
+	return e.notSampled.Load()
+}
+
+// ingestSpan buffers one span and records its trace in touched. Returns false
+// when the span is dropped by a memory safeguard.
+func (e *Engine) ingestSpan(now time.Time, s *Span) bool {
+	idx := stripeIndex(s.TraceID)
+	st := &e.stripes[idx]
+
+	st.mu.Lock()
+	if t, ok := st.traces[s.TraceID]; ok {
+		appended, retry := e.appendSpanUnderStripeLock(t, s)
+		st.mu.Unlock()
+		if !appended && !retry {
+			return false
+		}
+		e.markTouched(t)
+		return appended
+	}
+	st.mu.Unlock()
+
+	e.orderMu.Lock()
+	st.mu.Lock()
+	t, ok := st.traces[s.TraceID]
+	if !ok {
+		if e.cfg.MaxTraces > 0 && e.traceCount >= e.cfg.MaxTraces {
+			st.mu.Unlock()
+			if !e.evictOldestPendingLocked() {
+				e.orderMu.Unlock()
+				e.dropped.Add(1)
+				return false
+			}
+			st.mu.Lock()
+			t, ok = st.traces[s.TraceID]
+		}
+		if !ok {
+			t = &Trace{ID: s.TraceID, Arrived: now}
+			st.traces[s.TraceID] = t
+			e.traceCount++
+			t.elem = e.order.PushBack(t)
+		}
+	}
+	appended, retry := e.appendSpanUnderStripeLock(t, s)
+	st.mu.Unlock()
+	if !appended && !retry {
+		e.orderMu.Unlock()
+		return false
+	}
+	e.markTouchedLocked(t)
+	e.orderMu.Unlock()
+	return appended
+}
+
+// appendSpanUnderStripeLock appends s to t when under the per-trace cap.
+// The caller must hold the trace's stripe lock. Returns appended=false,
+// retry=true when the span is past the cap but the trace must still be
+// re-decided (sink retry).
+func (e *Engine) appendSpanUnderStripeLock(t *Trace, s *Span) (appended, retry bool) {
+	if e.cfg.MaxSpansPerTrace > 0 && len(t.Spans) >= e.cfg.MaxSpansPerTrace {
+		e.dropped.Add(1)
+		return false, t.touchedGen != e.gen
+	}
+	dup := false
+	if s.SpanID != (SpanID{}) {
+		for _, existing := range t.Spans {
+			if existing.SpanID == s.SpanID {
+				dup = true
+				break
+			}
+		}
+	}
+	if !dup {
+		t.Spans = append(t.Spans, s)
+	}
+	return true, false
+}
+
+func (e *Engine) markTouched(t *Trace) {
+	e.orderMu.Lock()
+	e.markTouchedLocked(t)
+	e.orderMu.Unlock()
+}
+
+func (e *Engine) markTouchedLocked(t *Trace) {
+	if t.touchedGen != e.gen {
+		t.touchedGen = e.gen
+		e.touched = append(e.touched, t)
+	}
 }
 
 // expire runs one expiry pass under the lock. The background ticker drives quiet
 // buffered traces to a decision through it; it never evaluates policies or
 // touches the sink, so it cannot fail.
 func (e *Engine) expire() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.orderMu.Lock()
+	defer e.orderMu.Unlock()
 	e.expireLocked(e.now(), false)
 }
 
 // removeLocked deletes a decided/expired trace from both the id index and the
 // arrival-ordered list (the latter in O(1) via the node the trace holds).
+// orderMu must be held.
 func (e *Engine) removeLocked(t *Trace) {
-	delete(e.traces, t.ID)
+	idx := stripeIndex(t.ID)
+	st := &e.stripes[idx]
+	st.mu.Lock()
+	delete(st.traces, t.ID)
+	st.mu.Unlock()
+	e.traceCount--
 	if t.elem != nil {
 		e.order.Remove(t.elem)
 		t.elem = nil
 	}
 }
 
+// evictOldestPendingLocked removes the oldest still-Pending trace from the
+// buffer to make room at MaxTraces. orderMu must be held. Returns false when
+// every buffered trace is non-Pending and nothing could be evicted.
+func (e *Engine) evictOldestPendingLocked() bool {
+	for elem := e.order.Front(); elem != nil; elem = elem.Next() {
+		t := elem.Value.(*Trace)
+		if t.decision != DecisionPending {
+			continue
+		}
+		t.decision = DecisionNotSampled
+		e.notSampled.Add(1)
+		e.removeLocked(t)
+		return true
+	}
+	return false
+}
+
 // decideLocked applies the policies to one still-Pending trace. The first
 // non-Pending policy wins: the trace takes that decision, is forwarded when
 // Sampled, and is removed from the buffer. Returns any sink error.
+// orderMu must be held.
 func (e *Engine) decideLocked(ctx context.Context, t *Trace) error {
 	if t.decision == DecisionSampled {
 		// Prior sink failure: retry forward; do not default-drop this trace.
@@ -426,11 +511,21 @@ func (e *Engine) decideLocked(ctx context.Context, t *Trace) error {
 // evaluateAllLocked runs decideLocked over every buffered trace. It is a full
 // O(n) scan and is used only on Shutdown to drain; the hot path evaluates only
 // the traces a batch touched (see Consume).
+// orderMu must be held.
 func (e *Engine) evaluateAllLocked(ctx context.Context) error {
 	var first error
-	for _, t := range e.traces {
-		if err := e.decideLocked(ctx, t); err != nil && first == nil {
-			first = err
+	for i := range e.stripes {
+		st := &e.stripes[i]
+		st.mu.Lock()
+		traces := make([]*Trace, 0, len(st.traces))
+		for _, t := range st.traces {
+			traces = append(traces, t)
+		}
+		st.mu.Unlock()
+		for _, t := range traces {
+			if err := e.decideLocked(ctx, t); err != nil && first == nil {
+				first = err
+			}
 		}
 	}
 	return first
@@ -451,6 +546,7 @@ func (e *Engine) evaluateAllLocked(ctx context.Context) error {
 // for time.Now and for the forward-only clocks the tests inject); a clock that
 // ran backwards could leave a due trace behind the stop point until the next
 // pass.
+// orderMu must be held.
 func (e *Engine) expireLocked(now time.Time, force bool) {
 	e.expireLockedSkip(now, force, nil)
 }
@@ -478,8 +574,23 @@ func (e *Engine) expireLockedSkip(now time.Time, force bool, skip map[TraceID]st
 			}
 		}
 		t.decision = DecisionNotSampled
-		e.notSampled++
+		e.notSampled.Add(1)
 		e.removeLocked(t)
 		elem = next
 	}
+}
+
+// bufferStateForTest returns the arrival-list length and total buffered trace
+// count. It is used by tests to verify index/list consistency.
+func (e *Engine) bufferStateForTest() (orderLen, traceLen int) {
+	e.orderMu.Lock()
+	orderLen = e.order.Len()
+	e.orderMu.Unlock()
+	for i := range e.stripes {
+		st := &e.stripes[i]
+		st.mu.Lock()
+		traceLen += len(st.traces)
+		st.mu.Unlock()
+	}
+	return orderLen, traceLen
 }
