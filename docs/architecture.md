@@ -97,6 +97,7 @@ astriena/
 ├── Makefile                      # test/lint the pure core; build the distro
 ├── docs/
 │   ├── architecture.md
+│   ├── observability.md          # self-telemetry metrics, alerts, scrape config
 │   └── assets/                   # constellation mark, favicon, social preview
 ├── internal/
 │   ├── sampling/                 # PURE tail-sampling engine (+ tests)
@@ -141,6 +142,9 @@ Collector module versions are **pinned** in `builder-config.yaml` to the
 ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/astriena \
   ./_build/astriena validate --config config.yaml
 ```
+
+For self-telemetry (Prometheus scrape endpoint, metric catalog, alert hints), see
+[`observability.md`](observability.md).
 
 ## Releasing (for the private cloud repo to consume)
 
