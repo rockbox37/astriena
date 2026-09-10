@@ -95,9 +95,12 @@ index and arrival list stay in lockstep with no leaked nodes
 
 Cost of the fix: one extra allocation per new trace (the list node), visible as
 4 → 5 allocs/op in `BenchmarkEngineConsume` — a deliberate trade for O(1)
-unlinking and O(k) expiry. What the hot-path `TODO(core)` still leaves open is a
-sharded/lock-striped buffer (mutex contention) and smarter eviction than
-drop-newest at the `MaxTraces` cap.
+unlinking and O(k) expiry. The hot path now also uses a **64-stripe lock-striped
+trace map** (per-trace ingest contends on `hash(trace_id) % 64` instead of one
+global mutex) and **MaxTraces eviction of the oldest still-Pending trace** from
+the arrival list rather than dropping the incoming span when room can be made.
+Isolation bench drop rate and alloc counts are unchanged at `MaxTraces=0`; re-run
+`make bench` after changing cap/eviction behavior under load.
 
 ## Head-to-head vs the stock `tail_sampling` processor
 
@@ -197,10 +200,9 @@ Ingest is where Astriena is ahead today: about **2.25×** lower `ConsumeTraces`
 latency and fewer allocs (52 vs 82). That is the public API, with the
 async-vs-sync caveat above.
 
-This comparison is the gate the `TODO(core)` note in
-[`internal/sampling/engine.go`](../internal/sampling/engine.go) asked for
-before lock-striping / smarter eviction. Those remain deferred — they target
-mutex contention and cap behavior, not this memory ratio. A Rust hot path is
-also still not justified: this run does not show Go GC / memory losing to
-stock at the processor boundary. If a later customer-scale run does, that is
-the trigger; do not start a rewrite on the back of these numbers.
+This comparison was the gate before lock-striping / smarter eviction (now
+landed in #8). Those changes target mutex contention and cap behavior, not this
+memory ratio. A Rust hot path is also still not justified: this run does not
+show Go GC / memory losing to stock at the processor boundary. If a later
+customer-scale run does, that is the trigger; do not start a rewrite on the back
+of these numbers.
