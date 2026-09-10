@@ -41,6 +41,10 @@ ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/astriena \
   ./_build/astriena --config config.yaml
 ```
 
+Self-metrics (sampler drops, ClickHouse flush counters) are exposed on `:8888/metrics`
+via the `service.telemetry` Prometheus reader in `config.yaml` — not mixed into the
+ClickHouse trace pipeline.
+
 > `make build` fetches the OpenTelemetry Collector modules pinned in
 > [`builder-config.yaml`](builder-config.yaml) (the `v0.160.0` / `v1.66.0` line)
 > and produces a runnable binary. The pure core (`make test`) builds offline with
