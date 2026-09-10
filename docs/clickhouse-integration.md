@@ -62,9 +62,10 @@ design — no ClickHouse service is required in CI.
   single-character wildcard, so it matches the base `attributes` column too.
   Use `startsWith(name, 'attr_')` when listing sparse columns.
 - **Database auto-created on connect**: when a target database is configured
-  (via `database` or the DSN path), `newInserter` connects without selecting it,
-  runs `CREATE DATABASE IF NOT EXISTS`, then opens the final connection with
-  `Auth.Database` set. No manual bootstrap is required for a fresh cluster.
+  (via `database` or the DSN path), `newInserter` tries to connect directly
+  first. If ClickHouse returns error 81 (database missing), it connects via the
+  DSN default database, runs `CREATE DATABASE IF NOT EXISTS`, then retries.
+  Least-privilege users scoped only to an existing target database are unaffected.
 
 ## Self-metrics
 

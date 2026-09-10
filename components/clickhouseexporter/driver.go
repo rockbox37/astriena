@@ -40,18 +40,49 @@ func newInserter(cfg *Config) (*chInserter, error) {
 	// Compress the wire batches; the customer pays for their own storage/egress.
 	opts.Compression = &clickhousego.Compression{Method: clickhousego.CompressionZSTD}
 
+	conn, err := openConnWithDatabase(context.Background(), opts, database)
+	if err != nil {
+		return nil, err
+	}
+	return &chInserter{conn: conn, database: database, table: cfg.Table}, nil
+}
+
+// openConnWithDatabase opens a connection to the target database, creating it
+// when ClickHouse reports error 81. A post-open SELECT verifies lazy connects.
+func openConnWithDatabase(ctx context.Context, opts *clickhousego.Options, database string) (driver.Conn, error) {
 	if database != "" {
-		if err := ensureDatabaseExists(context.Background(), opts, database); err != nil {
-			return nil, err
-		}
 		opts.Auth.Database = database
 	}
+	conn, err := clickhousego.Open(opts)
+	if err != nil {
+		if database != "" && isUnknownDatabase(err) {
+			return bootstrapAndOpen(ctx, opts, database)
+		}
+		return nil, fmt.Errorf("clickhouse: open: %w", err)
+	}
+	if database == "" {
+		return conn, nil
+	}
+	if err := conn.Exec(ctx, "SELECT 1"); err != nil {
+		_ = conn.Close()
+		if isUnknownDatabase(err) {
+			return bootstrapAndOpen(ctx, opts, database)
+		}
+		return nil, fmt.Errorf("clickhouse: verify database: %w", err)
+	}
+	return conn, nil
+}
 
+func bootstrapAndOpen(ctx context.Context, opts *clickhousego.Options, database string) (driver.Conn, error) {
+	if err := ensureDatabaseExists(ctx, opts, database); err != nil {
+		return nil, err
+	}
+	opts.Auth.Database = database
 	conn, err := clickhousego.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse: open: %w", err)
 	}
-	return &chInserter{conn: conn, database: database, table: cfg.Table}, nil
+	return conn, nil
 }
 
 // resolveDatabase returns the effective database from explicit config or the DSN.
@@ -60,6 +91,12 @@ func resolveDatabase(cfg *Config, opts *clickhousego.Options) string {
 		return cfg.Database
 	}
 	return opts.Auth.Database
+}
+
+// isUnknownDatabase reports ClickHouse error 81 (database does not exist).
+func isUnknownDatabase(err error) bool {
+	var ex *clickhousego.Exception
+	return errors.As(err, &ex) && ex.Code == 81
 }
 
 // ensureDatabaseExists connects without selecting the target database, then

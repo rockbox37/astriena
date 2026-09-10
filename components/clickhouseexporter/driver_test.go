@@ -1,6 +1,7 @@
 package clickhouseexporter
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -20,6 +21,23 @@ func TestQuoteStringEscapesBackslashAndQuote(t *testing.T) {
 		if got := quoteString(tc.in); got != tc.want {
 			t.Errorf("quoteString(%q) = %s, want %s", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestIsUnknownDatabase(t *testing.T) {
+	if isUnknownDatabase(nil) {
+		t.Fatal("nil error is not unknown database")
+	}
+	if isUnknownDatabase(errors.New("connection refused")) {
+		t.Fatal("generic error is not unknown database")
+	}
+	ex := &clickhousego.Exception{Code: 81, Message: "Database astriena doesn't exist"}
+	if !isUnknownDatabase(ex) {
+		t.Fatal("code 81 should be unknown database")
+	}
+	ex = &clickhousego.Exception{Code: 60, Message: "Unknown table"}
+	if isUnknownDatabase(ex) {
+		t.Fatal("code 60 is not unknown database")
 	}
 }
 
