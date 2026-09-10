@@ -3,6 +3,8 @@ package clickhouseexporter
 import (
 	"strings"
 	"testing"
+
+	clickhousego "github.com/ClickHouse/clickhouse-go/v2"
 )
 
 func TestQuoteStringEscapesBackslashAndQuote(t *testing.T) {
@@ -18,6 +20,19 @@ func TestQuoteStringEscapesBackslashAndQuote(t *testing.T) {
 		if got := quoteString(tc.in); got != tc.want {
 			t.Errorf("quoteString(%q) = %s, want %s", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestResolveDatabasePrefersConfigOverDSN(t *testing.T) {
+	opts := &clickhousego.Options{Auth: clickhousego.Auth{Database: "from_dsn"}}
+	if got := resolveDatabase(&Config{Database: "from_config"}, opts); got != "from_config" {
+		t.Fatalf("resolveDatabase with config = %q, want from_config", got)
+	}
+	if got := resolveDatabase(&Config{}, opts); got != "from_dsn" {
+		t.Fatalf("resolveDatabase from DSN = %q, want from_dsn", got)
+	}
+	if got := resolveDatabase(&Config{}, &clickhousego.Options{}); got != "" {
+		t.Fatalf("resolveDatabase empty = %q, want empty", got)
 	}
 }
 

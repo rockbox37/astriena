@@ -26,7 +26,9 @@ type chInserter struct {
 
 // newInserter opens a (lazily connected) driver.Conn from the BYOS DSN and
 // applies ZSTD compression for the batched writes. Database/table default from
-// the exporter config.
+// the exporter config. When a target database is configured, it is created if
+// missing before the final connection selects it (clickhouse-go selects
+// Auth.Database on connect, which fails when the database does not exist).
 func newInserter(cfg *Config) (*chInserter, error) {
 	opts, err := clickhousego.ParseDSN(string(cfg.DSN))
 	if err != nil {
@@ -34,21 +36,47 @@ func newInserter(cfg *Config) (*chInserter, error) {
 		// raw DSN (including the password) in URL.
 		return nil, errors.New("clickhouse: invalid dsn")
 	}
-	database := cfg.Database
-	if database == "" {
-		database = opts.Auth.Database
-	}
-	if database != "" {
-		opts.Auth.Database = database
-	}
+	database := resolveDatabase(cfg, opts)
 	// Compress the wire batches; the customer pays for their own storage/egress.
 	opts.Compression = &clickhousego.Compression{Method: clickhousego.CompressionZSTD}
+
+	if database != "" {
+		if err := ensureDatabaseExists(context.Background(), opts, database); err != nil {
+			return nil, err
+		}
+		opts.Auth.Database = database
+	}
 
 	conn, err := clickhousego.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse: open: %w", err)
 	}
 	return &chInserter{conn: conn, database: database, table: cfg.Table}, nil
+}
+
+// resolveDatabase returns the effective database from explicit config or the DSN.
+func resolveDatabase(cfg *Config, opts *clickhousego.Options) string {
+	if cfg.Database != "" {
+		return cfg.Database
+	}
+	return opts.Auth.Database
+}
+
+// ensureDatabaseExists connects without selecting the target database, then
+// creates it if missing. Idempotent and safe when the database already exists.
+func ensureDatabaseExists(ctx context.Context, opts *clickhousego.Options, database string) error {
+	bootstrapOpts := *opts
+	bootstrapOpts.Auth.Database = ""
+	conn, err := clickhousego.Open(&bootstrapOpts)
+	if err != nil {
+		return fmt.Errorf("clickhouse: open for ensure database: %w", err)
+	}
+	defer conn.Close()
+
+	if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+quoteIdent(database)); err != nil {
+		return fmt.Errorf("clickhouse: create database: %w", err)
+	}
+	return nil
 }
 
 // qualified returns `db`.`table`, or just `table` when no database is set.
