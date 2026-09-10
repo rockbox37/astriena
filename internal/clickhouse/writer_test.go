@@ -377,6 +377,86 @@ func TestCloseConcurrentWithWriteDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestWritePropagatesContextCancelDuringRetryFlush(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 2})
+	ins.failInsert = errors.New("clickhouse unavailable")
+	base := context.Background()
+
+	if err := w.Write(base, make([]Row, 20)); err != nil {
+		t.Fatalf("oversized Write: %v", err)
+	}
+	waitIdle(t, w, base)
+
+	ctx, cancel := context.WithCancel(base)
+	cancel()
+	if err := w.Write(ctx, []Row{{}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Write with cancelled ctx: got %v, want context.Canceled", err)
+	}
+}
+
+func TestCloseWaitsForInFlightAsyncFlush(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 2})
+	ctx := context.Background()
+	block := make(chan struct{})
+	ins.insertWait = block
+
+	done := make(chan struct{})
+	go func() {
+		if err := w.Write(ctx, []Row{{}, {}}); err != nil {
+			t.Errorf("Write: %v", err)
+		}
+		close(done)
+	}()
+	<-done
+
+	closeCh := make(chan error, 1)
+	go func() {
+		closeCh <- w.Close(ctx)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(block)
+
+	if err := <-closeCh; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if len(ins.batches) != 1 || len(ins.batches[0]) != 2 {
+		t.Fatalf("in-flight async batch lost on Close: got %v", sizes(ins.batches))
+	}
+}
+
+func TestCloseDrainsAfterInFlightFailureRebuffers(t *testing.T) {
+	w, ins := newTestWriter(t, Config{BatchSize: 1})
+	ctx := context.Background()
+	block := make(chan struct{})
+	ins.insertWait = block
+	ins.failInsert = errors.New("transient")
+
+	done := make(chan struct{})
+	go func() {
+		if err := w.Write(ctx, []Row{{TraceID: "keep"}}); err != nil {
+			t.Errorf("Write: %v", err)
+		}
+		close(done)
+	}()
+	<-done
+
+	closeCh := make(chan error, 1)
+	go func() {
+		closeCh <- w.Close(ctx)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(block) // first insert fails (failInsert cleared); Close drain retries
+
+	if err := <-closeCh; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if len(ins.batches) != 1 || len(ins.batches[0]) != 1 || ins.batches[0][0].TraceID != "keep" {
+		t.Fatalf("re-buffered row lost on Close: got %v", sizes(ins.batches))
+	}
+}
+
 func TestWorkerShutdownDrainsPendingFlush(t *testing.T) {
 	w, ins := newTestWriter(t, Config{BatchSize: 100})
 	ctx := context.Background()

@@ -235,7 +235,11 @@ func (w *Writer) Write(ctx context.Context, rows []Row) error {
 		// ingest until the ticker (or forever when FlushInterval is unset).
 		// Writer owns retry: flush errors are re-buffered; only errBufferFull
 		// signals the Collector when the cap is still exceeded.
-		_ = w.enqueueFlush(ctx, nil, true)
+		if err := w.enqueueFlush(ctx, nil, true); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
 		w.mu.Lock()
 		if w.closed {
 			w.mu.Unlock()
@@ -413,6 +417,13 @@ func (w *Writer) Close(ctx context.Context) error {
 
 	var flushErr error
 	for {
+		// Wait for in-flight async flushes before treating the buffer as empty.
+		// A size-triggered batch may still be inserting (or re-buffering on
+		// failure) after writers.Wait returns.
+		if err := w.sync(context.Background()); err != nil {
+			flushErr = err
+			break
+		}
 		w.mu.Lock()
 		empty := len(w.buf) == 0
 		w.mu.Unlock()
