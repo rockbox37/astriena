@@ -41,11 +41,11 @@ CLICKHOUSE_DB ?= astriena
 
 .PHONY: clickhouse-up clickhouse-bootstrap clickhouse-down
 clickhouse-up:
-	@docker rm -f astriena-ch-it 2>/dev/null || true
-	docker run -d --name astriena-ch-it -p 127.0.0.1:9000:9000 clickhouse/clickhouse-server:24
+	@docker rm -f $(CLICKHOUSE_CONTAINER) 2>/dev/null || true
+	docker run -d --name $(CLICKHOUSE_CONTAINER) -p 127.0.0.1:9000:9000 clickhouse/clickhouse-server:24
 	@echo "Waiting for ClickHouse..."
 	@ready=0; for i in $$(seq 1 30); do \
-		docker exec astriena-ch-it clickhouse-client --query "SELECT 1" >/dev/null 2>&1 && ready=1 && break; \
+		docker exec $(CLICKHOUSE_CONTAINER) clickhouse-client --query "SELECT 1" >/dev/null 2>&1 && ready=1 && break; \
 		sleep 1; \
 	done; \
 	if [ $$ready -eq 0 ]; then echo "ClickHouse failed to become ready within 30s" >&2; exit 1; fi
@@ -57,10 +57,12 @@ clickhouse-bootstrap:
 		exit 1; \
 	fi
 	docker exec $(CLICKHOUSE_CONTAINER) clickhouse-client --query "CREATE DATABASE IF NOT EXISTS $(CLICKHOUSE_DB)"
-	@echo "Database '$(CLICKHOUSE_DB)' ready — export ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/$(CLICKHOUSE_DB)"
+	@echo "Database '$(CLICKHOUSE_DB)' ready"
+	@echo "  ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/$(CLICKHOUSE_DB)  (run astriena)"
+	@echo "  CLICKHOUSE_DSN=clickhouse://localhost:9000/$(CLICKHOUSE_DB)           (make test-integration)"
 
 clickhouse-down:
-	docker rm -f astriena-ch-it
+	docker rm -f $(CLICKHOUSE_CONTAINER)
 
 .PHONY: test-bench
 test-bench:
