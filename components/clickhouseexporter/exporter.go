@@ -33,6 +33,7 @@ func newExporter(_ context.Context, set exporter.Settings, cfg *Config) (exporte
 	}
 	metrics, err := newWriterMetrics(set.TelemetrySettings, w)
 	if err != nil {
+		_ = w.Close(context.Background())
 		return nil, err
 	}
 	return &chExporter{w: w, metrics: metrics}, nil

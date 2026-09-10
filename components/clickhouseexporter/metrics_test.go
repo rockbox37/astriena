@@ -6,9 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
-	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/rockbox37/astriena/internal/clickhouse"
@@ -51,11 +49,6 @@ func newTestWriterMetrics(t *testing.T) (*componenttest.Telemetry, *clickhouse.W
 		_ = tel.Shutdown(context.Background())
 	})
 
-	set := exporter.Settings{
-		ID:                component.NewID(Type),
-		TelemetrySettings: tel.NewTelemetrySettings(),
-	}
-
 	ins := &testInserter{}
 	w, err := clickhouse.NewWriter(clickhouse.Config{BatchSize: 2}, ins)
 	if err != nil {
@@ -65,7 +58,7 @@ func newTestWriterMetrics(t *testing.T) (*componenttest.Telemetry, *clickhouse.W
 		_ = w.Close(context.Background())
 	})
 
-	metrics, err := newWriterMetrics(set.TelemetrySettings, w)
+	metrics, err := newWriterMetrics(tel.NewTelemetrySettings(), w)
 	if err != nil {
 		t.Fatalf("newWriterMetrics: %v", err)
 	}
@@ -120,25 +113,18 @@ func TestMetricsReportBufferFullRejection(t *testing.T) {
 	}
 	waitFlushAttempts(t, w, 1)
 
-	// Drive the writer into buffer-full rejection with persistent insert failures,
-	// matching internal/clickhouse/writer_test.go without relying on sync().
-	for w.Stats().WritesRejectedBufferFull == 0 {
-		ins.failInsert = errors.New("still down")
-		wantAttempts := w.Stats().FlushAttempts + 1
-		err := w.Write(ctx, []clickhouse.Row{{}, {}})
-		if err != nil {
-			if w.Stats().WritesRejectedBufferFull == 0 {
-				t.Fatalf("Write stopped early: %v", err)
-			}
-			break
+	ins.failInsert = errors.New("still down")
+	for i := 0; i < 3; i++ {
+		want := w.Stats().FlushAttempts + 1
+		if err := w.Write(ctx, []clickhouse.Row{{}, {}}); err != nil {
+			t.Fatalf("Write %d: %v", i+2, err)
 		}
-		waitFlushAttempts(t, w, wantAttempts)
+		waitFlushAttempts(t, w, want)
+		ins.failInsert = errors.New("still down")
 	}
-	if w.Stats().WritesRejectedBufferFull == 0 {
-		ins.failInsert = errors.New("still down")
-		if err := w.Write(ctx, []clickhouse.Row{{}}); err == nil {
-			t.Fatal("Write past cap: expected buffer full error")
-		}
+	ins.failInsert = errors.New("still down")
+	if err := w.Write(ctx, []clickhouse.Row{{}}); err == nil {
+		t.Fatal("Write past cap: expected buffer full error")
 	}
 	if w.Stats().WritesRejectedBufferFull != 1 {
 		t.Fatalf("WritesRejectedBufferFull = %d, want 1", w.Stats().WritesRejectedBufferFull)
