@@ -8,6 +8,14 @@ pinned released versions.
 
 ## [Unreleased]
 
+### Changed
+- Set the pale-gold **A** mark and full **Astriena** wordmark in Cinzel
+  Decorative, with all branded SVG lettering converted to paths for portable
+  GitHub rendering. The unmodified font and SIL OFL 1.1 license are vendored
+  alongside a reproducible SVG/PNG renderer (follow-up to #9).
+- Removed constellation links and badge geometry in favor of an irregular,
+  mixed-magnitude night sky.
+
 ### Fixed
 - Keep-worthy traces and accepted ClickHouse rows survive sink errors and
   cancelled Collector shutdown: sampled traces stay held until forward
@@ -33,7 +41,7 @@ pinned released versions.
   (`TestLateErrorSpanSamplesBufferedTrace`, `TestBufferIndexAndOrderStayConsistent`).
 
 ### Added
-- Constellation branding: original five-star asterism mark and night-sky token
+- Constellation branding: original asterism mark and night-sky token
   set in `docs/assets/`, wired into the README and docs headers (closes #9).
 - Project scaffolding: custom OpenTelemetry Collector distribution shape.
 - Pure, framework-free core: `internal/sampling` (tail-sampling engine with

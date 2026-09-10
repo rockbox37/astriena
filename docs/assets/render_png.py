@@ -1,160 +1,209 @@
 #!/usr/bin/env python3
-"""Rasterize the Astriena mark (SVG is the source of truth) to PNG. Stdlib only."""
+"""Regenerate Astriena's SVG and PNG brand assets.
+
+The committed Cinzel Decorative font is the unmodified Google Fonts release.
+Install tooling in a temporary environment; no Python packages belong in the
+Go module:
+
+    python3 -m venv /tmp/astriena-brand
+    /tmp/astriena-brand/bin/pip install fonttools==4.64.0 cairosvg==2.9.1
+    /tmp/astriena-brand/bin/python docs/assets/render_png.py
+"""
 
 from __future__ import annotations
 
-import math
-import struct
-import zlib
 from pathlib import Path
 
-BG = (0x0B, 0x12, 0x20)
-SURFACE = (0x1A, 0x27, 0x40)
-STAR = (0xE8, 0xD5, 0xA3)
-CORE = (0xF7, 0xF1, 0xE1)
-LINE = (0xC4, 0xB4, 0x8A)
-DIM = (0x5C, 0x6B, 0x84)
+import cairosvg
+from fontTools.pens.svgPathPen import SVGPathPen
+from fontTools.pens.transformPen import TransformPen
+from fontTools.ttLib import TTFont
 
-STARS = [(32, 11, 2.05), (19, 26, 1.55), (45, 24, 1.55), (15, 50, 1.35), (50, 51, 1.35)]
-LINES = [((32, 11), (19, 26)), ((19, 26), (15, 50)), ((32, 11), (45, 24)), ((45, 24), (50, 51)), ((19, 26), (45, 24))]
-FIELD = [(10, 16, 0.55), (56, 12, 0.45), (58, 42, 0.5), (22, 58, 0.4), (40, 7, 0.45)]
+BG = "#0B1220"
+SURFACE = "#141C2E"
+STAR = "#E8D5A3"
+CORE = "#F7F1E1"
+DIM = "#5C6B84"
+TEXT = "#E8EEF7"
+MUTED = "#9AA8BC"
 
-
-def lerp(a: int, b: int, t: float) -> int:
-    return int(a + (b - a) * t)
-
-
-def mix(c1: tuple[int, int, int], c2: tuple[int, int, int], t: float) -> tuple[int, int, int]:
-    t = max(0.0, min(1.0, t))
-    return (lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t))
-
-
-def blend(dst: list[int], i: int, color: tuple[int, int, int], a: float) -> None:
-    if a <= 0:
-        return
-    if a >= 1:
-        dst[i], dst[i + 1], dst[i + 2] = color
-        return
-    ia = 1.0 - a
-    dst[i] = int(dst[i] * ia + color[0] * a)
-    dst[i + 1] = int(dst[i + 1] * ia + color[1] * a)
-    dst[i + 2] = int(dst[i + 2] * ia + color[2] * a)
-
-
-class Canvas:
-    def __init__(self, w: int, h: int, bg: tuple[int, int, int] = BG) -> None:
-        self.w = w
-        self.h = h
-        self.px = [0] * (w * h * 3)
-        for i in range(0, len(self.px), 3):
-            self.px[i], self.px[i + 1], self.px[i + 2] = bg
-
-    def _idx(self, x: int, y: int) -> int | None:
-        if 0 <= x < self.w and 0 <= y < self.h:
-            return (y * self.w + x) * 3
-        return None
-
-    def set(self, x: int, y: int, color: tuple[int, int, int], a: float = 1.0) -> None:
-        i = self._idx(x, y)
-        if i is not None:
-            blend(self.px, i, color, a)
-
-    def fill_radial(self, cx: float, cy: float, radius: float, inner: tuple[int, int, int], outer: tuple[int, int, int]) -> None:
-        for y in range(self.h):
-            for x in range(self.w):
-                t = math.hypot(x - cx, y - cy) / radius
-                c = mix(inner, outer, min(t, 1.0))
-                i = (y * self.w + x) * 3
-                self.px[i], self.px[i + 1], self.px[i + 2] = c
-
-    def rounded_rect_mask(self, radius: float) -> None:
-        r = radius
-        for y in range(self.h):
-            for x in range(self.w):
-                cx = r if x < r else (self.w - 1 - r if x > self.w - 1 - r else x)
-                cy = r if y < r else (self.h - 1 - r if y > self.h - 1 - r else y)
-                if x < r or x > self.w - 1 - r or y < r or y > self.h - 1 - r:
-                    if math.hypot(x - cx, y - cy) > r:
-                        self.set(x, y, BG, 1.0)
-
-    def circle(self, cx: float, cy: float, r: float, color: tuple[int, int, int], a: float = 1.0) -> None:
-        x0, x1 = int(cx - r - 1), int(cx + r + 2)
-        y0, y1 = int(cy - r - 1), int(cy + r + 2)
-        for y in range(y0, y1):
-            for x in range(x0, x1):
-                d = math.hypot(x + 0.5 - cx, y + 0.5 - cy)
-                cov = max(0.0, min(1.0, r + 0.5 - d))
-                if cov:
-                    self.set(x, y, color, a * cov)
-
-    def line(self, x0: float, y0: float, x1: float, y1: float, width: float, color: tuple[int, int, int]) -> None:
-        steps = max(2, int(math.hypot(x1 - x0, y1 - y0) * 2))
-        r = max(0.6, width / 2.0)
-        for i in range(steps + 1):
-            t = i / steps
-            self.circle(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, r, color, 1.0)
-
-    def star(self, cx: float, cy: float, r: float) -> None:
-        self.circle(cx, cy, r, STAR, 1.0)
-        self.circle(cx, cy, max(0.6, r * 0.32), CORE, 1.0)
+FIELD = [
+    (6, 9, .28), (14, 6, .38), (25, 8, .24), (36, 5, .31),
+    (49, 7, .25), (58, 12, .36), (4, 26, .23), (8, 39, .34),
+    (5, 51, .25), (13, 58, .30), (29, 58, .24), (41, 60, .33),
+    (55, 56, .27), (60, 45, .35), (58, 35, .22), (61, 22, .29),
+    (12, 27, .22), (22, 28, .30), (34, 27, .21), (47, 20, .24),
+    (50, 38, .32), (44, 50, .22), (31, 51, .27), (11, 46, .20),
+    (27, 14, .19), (39, 38, .24), (54, 15, .18), (35, 56, .18),
+]
+STARS = [
+    (18, 16, .88), (39, 31, .74), (25, 45, .68), (54, 27, .62),
+    (43, 12, .56), (14, 34, .51), (31, 19, .46), (18, 54, .43),
+    (9, 21, .39), (48, 46, .36), (34, 42, .33), (52, 16, .30),
+]
+STAR_CORES = [(18, 16, .27), (39, 31, .22), (25, 45, .19), (54, 27, .17)]
+FIELD_16 = [
+    (2.5, 3, .28), (12.7, 2.4, .25), (2.2, 10.8, .22),
+    (13.6, 11.5, .30), (4.4, 13.7, .24), (11.4, 14, .20),
+]
+SOCIAL_FIELD = [
+    (80, 70, 1.2), (160, 140, .9), (240, 48, 1.1), (420, 90, .8),
+    (980, 70, 1.2), (1100, 120, .9), (1180, 200, 1.1), (1040, 520, 1),
+    (200, 540, 1.1), (60, 400, .8), (720, 80, .7), (860, 560, .9),
+    (1240, 400, .8), (500, 580, .7), (620, 40, .7), (780, 520, .8),
+    (1140, 48, .6), (320, 600, .7), (40, 220, .65), (1260, 280, .7),
+    (880, 96, .55), (560, 600, .6), (980, 300, .7), (160, 300, .5),
+]
 
 
-def png(canvas: Canvas, path: Path) -> None:
-    raw = b"".join(b"\x00" + bytes(canvas.px[y * canvas.w * 3 : (y + 1) * canvas.w * 3]) for y in range(canvas.h))
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
-        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
-
-    ihdr = struct.pack(">IIBBBBB", canvas.w, canvas.h, 8, 2, 0, 0, 0)
-    path.write_bytes(
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", ihdr)
-        + chunk(b"IDAT", zlib.compress(raw, 9))
-        + chunk(b"IEND", b"")
+def circles(points: list[tuple[float, float, float]], fill: str) -> str:
+    return "".join(
+        f'<circle cx="{x:g}" cy="{y:g}" r="{r:g}"/>' for x, y, r in points
     )
 
 
-def draw_asterism(c: Canvas, ox: float, oy: float, scale: float, line_w: float) -> None:
-    for (x0, y0), (x1, y1) in LINES:
-        c.line(ox + x0 * scale, oy + y0 * scale, ox + x1 * scale, oy + y1 * scale, line_w, LINE)
-    for x, y, r in STARS:
-        c.star(ox + x * scale, oy + y * scale, r * scale)
+class Outliner:
+    """Convert glyphs from the vendored TTF into SVG path data."""
+
+    def __init__(self, path: Path) -> None:
+        self.font = TTFont(path)
+        self.glyphs = self.font.getGlyphSet()
+        self.cmap = self.font.getBestCmap()
+        self.hmtx = self.font["hmtx"].metrics
+        self.units = self.font["head"].unitsPerEm
+
+    def glyph_name(self, character: str) -> str:
+        return self.cmap[ord(character)]
+
+    def glyph_path(
+        self, character: str, x: float, baseline: float, scale: float
+    ) -> str:
+        pen = SVGPathPen(
+            self.glyphs,
+            ntos=lambda value: f"{value:.3f}".rstrip("0").rstrip("."),
+        )
+        transformed = TransformPen(pen, (scale, 0, 0, -scale, x, baseline))
+        self.glyphs[self.glyph_name(character)].draw(transformed)
+        return pen.getCommands()
+
+    def text_paths(
+        self, text: str, x: float, baseline: float, size: float,
+        tracking: float = 0,
+    ) -> tuple[list[str], float]:
+        scale = size / self.units
+        paths: list[str] = []
+        cursor = x
+        for character in text:
+            name = self.glyph_name(character)
+            paths.append(self.glyph_path(character, cursor, baseline, scale))
+            cursor += self.hmtx[name][0] * scale + tracking
+        return paths, cursor
 
 
-def render_mark(size: int, path: Path) -> None:
-    c = Canvas(size, size, BG)
-    c.fill_radial(size * 0.38, size * 0.28, size * 0.78, SURFACE, BG)
-    c.rounded_rect_mask(size * 14 / 64)
-    scale = size / 64.0
-    for x, y, r in FIELD:
-        c.circle(x * scale, y * scale, max(0.8, r * scale), DIM, 1.0)
-    draw_asterism(c, 0, 0, scale, 1.7 * scale)
-    png(c, path)
+def svg_header(view_box: str, title: str, desc: str) -> str:
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_box}" '
+        'role="img" aria-labelledby="title desc">\n'
+        f'  <title id="title">{title}</title>\n'
+        f'  <desc id="desc">{desc}</desc>\n'
+    )
 
 
-def render_social(path: Path) -> None:
-    w, h = 1280, 640
-    c = Canvas(w, h, BG)
-    c.fill_radial(w * 0.32, h * 0.40, w * 0.80, SURFACE, BG)
-    field = [
-        (80, 70, 1.2), (160, 140, 0.9), (240, 48, 1.1), (420, 90, 0.8),
-        (980, 70, 1.2), (1100, 120, 0.9), (1180, 200, 1.1), (1040, 520, 1.0),
-        (200, 540, 1.1), (60, 400, 0.8), (720, 80, 0.7), (860, 560, 0.9),
-        (1240, 400, 0.8), (500, 580, 0.7),
-    ]
-    for x, y, r in field:
-        c.circle(x, y, r, DIM, 1.0)
-    scale = 7.2
-    draw_asterism(c, 640 - 32 * scale, 320 - 31 * scale, scale, 1.7 * scale)
-    png(c, path)
+def mark_svg(outliner: Outliner, compact: bool = False) -> str:
+    size = 16 if compact else 64
+    field = FIELD_16 if compact else FIELD
+    radius = 3.5 if compact else 14
+    if compact:
+        a_path = outliner.glyph_path("A", 2.5, 10.8, .012)
+    else:
+        a_path = outliner.glyph_path("A", 10.5, 44.2, .046)
+    star_groups = ""
+    if not compact:
+        star_groups = (
+            f'  <g fill="{STAR}">{circles(STARS, STAR)}</g>\n'
+            f'  <g fill="{CORE}">{circles(STAR_CORES, CORE)}</g>\n'
+        )
+    return (
+        svg_header(
+            f"0 0 {size} {size}",
+            "Astriena",
+            "A Cinzel Decorative capital A over an irregular star field.",
+        )
+        + (
+            '  <defs><radialGradient id="sky" cx="34%" cy="27%" r="82%">'
+            f'<stop offset="0%" stop-color="{SURFACE}"/>'
+            f'<stop offset="100%" stop-color="{BG}"/>'
+            "</radialGradient></defs>\n"
+            if not compact else ""
+        )
+        + f'  <rect width="{size}" height="{size}" rx="{radius}" fill="'
+        + ('url(#sky)' if not compact else BG)
+        + '"/>\n'
+        + f'  <g fill="{DIM}">{circles(field, DIM)}</g>\n'
+        + star_groups
+        + f'  <path fill="{STAR}" d="{a_path}"/>\n'
+        + "</svg>\n"
+    )
+
+
+def social_svg(outliner: Outliner) -> str:
+    word_paths, _ = outliner.text_paths("Astriena", 500, 300, 95, 2)
+    tagline_paths, _ = outliner.text_paths("of the stars", 504, 362, 28, 4)
+    descriptor_paths, _ = outliner.text_paths(
+        "OpenTelemetry sampling · BYOS ClickHouse", 504, 414, 20
+    )
+    mark_path = outliner.glyph_path("A", 75, 458, .36)
+    paths = "".join(f'<path d="{path}"/>' for path in word_paths)
+    tagline = "".join(f'<path d="{path}"/>' for path in tagline_paths)
+    descriptor = "".join(f'<path d="{path}"/>' for path in descriptor_paths)
+    return (
+        svg_header(
+            "0 0 1280 640",
+            "Astriena — of the stars",
+            "Night-sky banner with outlined Cinzel Decorative branding.",
+        )
+        + '  <defs><radialGradient id="sky" cx="32%" cy="40%" r="80%">'
+        f'<stop offset="0%" stop-color="{SURFACE}"/>'
+        '<stop offset="55%" stop-color="#0F1828"/>'
+        f'<stop offset="100%" stop-color="{BG}"/>'
+        "</radialGradient></defs>\n"
+        '  <rect width="1280" height="640" fill="url(#sky)"/>\n'
+        f'  <g fill="{DIM}">{circles(SOCIAL_FIELD, DIM)}</g>\n'
+        f'  <path fill="{STAR}" d="{mark_path}"/>\n'
+        f'  <g fill="{STAR}">{paths}</g>\n'
+        f'  <g fill="{MUTED}">{tagline}</g>\n'
+        f'  <g fill="{MUTED}">{descriptor}</g>\n'
+        "</svg>\n"
+    )
+
+
+def rasterize(svg: str, output: Path, width: int, height: int) -> None:
+    """Render a generated SVG verbatim; SVG remains the single source of truth."""
+    cairosvg.svg2png(
+        bytestring=svg.encode(),
+        write_to=str(output),
+        output_width=width,
+        output_height=height,
+    )
 
 
 def main() -> None:
     here = Path(__file__).resolve().parent
-    render_mark(512, here / "astriena-icon-512.png")
-    render_mark(64, here / "astriena-icon-64.png")
-    render_social(here / "astriena-social.png")
+    font_path = here / "fonts" / "CinzelDecorative-Regular.ttf"
+    outliner = Outliner(font_path)
+
+    mark = mark_svg(outliner)
+    compact = mark_svg(outliner, compact=True)
+    social = social_svg(outliner)
+    (here / "astriena-mark.svg").write_text(mark)
+    (here / "astriena-mark-16.svg").write_text(compact)
+    (here / "favicon.svg").write_text(compact)
+    (here / "astriena-social.svg").write_text(social)
+
+    rasterize(mark, here / "astriena-icon-512.png", 512, 512)
+    rasterize(mark, here / "astriena-icon-64.png", 64, 64)
+    rasterize(compact, here / "astriena-icon-16.png", 16, 16)
+    rasterize(social, here / "astriena-social.png", 1280, 640)
 
 
 if __name__ == "__main__":

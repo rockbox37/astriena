@@ -55,9 +55,13 @@ sampling engine ([`internal/sampling`](internal/sampling)) and ClickHouse writer
 
 ## Visual language
 
-The mark is an original five-star asterism (a slightly irregular A of linked
-stars), not a catalogued constellation. Night-sky tokens used across the SVG
-assets in [`docs/assets/`](docs/assets/):
+The mark pairs an irregular mixed-magnitude night sky with a pale-gold capital
+**A** in [Cinzel Decorative](https://github.com/google/fonts/tree/main/ofl/cinzeldecorative),
+designed by Natanael Gama and licensed under the SIL Open Font License 1.1.
+Social lockups use the full **Astriena** wordmark in the same face. Letterforms
+are committed as outlined SVG paths so GitHub rendering does not depend on an
+installed font.
+Night-sky tokens used across the SVG assets in [`docs/assets/`](docs/assets/):
 
 | Token | Hex | Role |
 |---|---|---|
@@ -65,7 +69,6 @@ assets in [`docs/assets/`](docs/assets/):
 | `surface` | `#141C2E` | Raised panel / gradient peak `#1A2740` |
 | `star` | `#E8D5A3` | Star body and accent |
 | `star-core` | `#F7F1E1` | Bright star core |
-| `line` | `#C4B48A` | Asterism links |
 | `dim` | `#5C6B84` | Distant field stars |
 | `text` | `#E8EEF7` | Primary text on sky |
 | `text-muted` | `#9AA8BC` | Secondary text |
@@ -73,8 +76,16 @@ assets in [`docs/assets/`](docs/assets/):
 Source of truth is the SVG. `astriena-mark.svg` is the app/avatar mark;
 `astriena-mark-16.svg` / `favicon.svg` are the 16px silhouette; `astriena-social.svg`
 is the typeset 1280×640 preview. Matching PNGs (`astriena-icon-512.png`,
-`astriena-social.png`) are for GitHub, which wants raster uploads. Org/repo
-avatar and Settings → Social preview still need a maintainer upload.
+`astriena-icon-64.png`, `astriena-icon-16.png`, `astriena-social.png`) are for
+GitHub, which wants raster uploads. Org/repo avatar and Settings → Social
+preview still need a maintainer upload.
+
+To regenerate every SVG and PNG from the unmodified vendored TTF, create a
+temporary virtual environment, install the pinned `fonttools` and `cairosvg`
+versions, and run
+[`docs/assets/render_png.py`](docs/assets/render_png.py). The exact commands are
+documented at the top of that script; no Python dependencies are added to the Go
+module.
 
 ## License
 

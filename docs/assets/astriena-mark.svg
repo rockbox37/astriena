@@ -1,37 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
   <title id="title">Astriena</title>
-  <desc id="desc">Original five-star asterism: a slightly irregular A of linked stars on a night sky. Not a catalogued constellation.</desc>
-  <defs>
-    <radialGradient id="sky" cx="38%" cy="28%" r="78%">
-      <stop offset="0%" stop-color="#1A2740"/>
-      <stop offset="100%" stop-color="#0B1220"/>
-    </radialGradient>
-  </defs>
+  <desc id="desc">A Cinzel Decorative capital A over an irregular star field.</desc>
+  <defs><radialGradient id="sky" cx="34%" cy="27%" r="82%"><stop offset="0%" stop-color="#141C2E"/><stop offset="100%" stop-color="#0B1220"/></radialGradient></defs>
   <rect width="64" height="64" rx="14" fill="url(#sky)"/>
-  <!-- Distant field stars (unlinked) -->
-  <circle cx="10" cy="16" r="0.55" fill="#5C6B84"/>
-  <circle cx="56" cy="12" r="0.45" fill="#5C6B84"/>
-  <circle cx="58" cy="42" r="0.5" fill="#5C6B84"/>
-  <circle cx="22" cy="58" r="0.4" fill="#5C6B84"/>
-  <circle cx="40" cy="7" r="0.45" fill="#5C6B84"/>
-  <!-- Asterism lines -->
-  <g fill="none" stroke="#C4B48A" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M32 11 L19 26 L15 50"/>
-    <path d="M32 11 L45 24 L50 51"/>
-    <path d="M19 26 L45 24"/>
-  </g>
-  <g fill="#E8D5A3">
-    <circle cx="32" cy="11" r="2.15"/>
-    <circle cx="19" cy="26" r="1.65"/>
-    <circle cx="45" cy="24" r="1.65"/>
-    <circle cx="15" cy="50" r="1.45"/>
-    <circle cx="50" cy="51" r="1.45"/>
-  </g>
-  <g fill="#F7F1E1">
-    <circle cx="32" cy="11" r="0.7"/>
-    <circle cx="19" cy="26" r="0.5"/>
-    <circle cx="45" cy="24" r="0.5"/>
-    <circle cx="15" cy="50" r="0.4"/>
-    <circle cx="50" cy="51" r="0.4"/>
-  </g>
+  <g fill="#5C6B84"><circle cx="6" cy="9" r="0.28"/><circle cx="14" cy="6" r="0.38"/><circle cx="25" cy="8" r="0.24"/><circle cx="36" cy="5" r="0.31"/><circle cx="49" cy="7" r="0.25"/><circle cx="58" cy="12" r="0.36"/><circle cx="4" cy="26" r="0.23"/><circle cx="8" cy="39" r="0.34"/><circle cx="5" cy="51" r="0.25"/><circle cx="13" cy="58" r="0.3"/><circle cx="29" cy="58" r="0.24"/><circle cx="41" cy="60" r="0.33"/><circle cx="55" cy="56" r="0.27"/><circle cx="60" cy="45" r="0.35"/><circle cx="58" cy="35" r="0.22"/><circle cx="61" cy="22" r="0.29"/><circle cx="12" cy="27" r="0.22"/><circle cx="22" cy="28" r="0.3"/><circle cx="34" cy="27" r="0.21"/><circle cx="47" cy="20" r="0.24"/><circle cx="50" cy="38" r="0.32"/><circle cx="44" cy="50" r="0.22"/><circle cx="31" cy="51" r="0.27"/><circle cx="11" cy="46" r="0.2"/><circle cx="27" cy="14" r="0.19"/><circle cx="39" cy="38" r="0.24"/><circle cx="54" cy="15" r="0.18"/><circle cx="35" cy="56" r="0.18"/></g>
+  <g fill="#E8D5A3"><circle cx="18" cy="16" r="0.88"/><circle cx="39" cy="31" r="0.74"/><circle cx="25" cy="45" r="0.68"/><circle cx="54" cy="27" r="0.62"/><circle cx="43" cy="12" r="0.56"/><circle cx="14" cy="34" r="0.51"/><circle cx="31" cy="19" r="0.46"/><circle cx="18" cy="54" r="0.43"/><circle cx="9" cy="21" r="0.39"/><circle cx="48" cy="46" r="0.36"/><circle cx="34" cy="42" r="0.33"/><circle cx="52" cy="16" r="0.3"/></g>
+  <g fill="#F7F1E1"><circle cx="18" cy="16" r="0.27"/><circle cx="39" cy="31" r="0.22"/><circle cx="25" cy="45" r="0.19"/><circle cx="54" cy="27" r="0.17"/></g>
+  <path fill="#E8D5A3" d="M15.974 10.436Q18.964 9.194 21.724 9.194Q24.024 9.194 26.462 10.896Q27.796 11.816 29.452 14.484Q30.556 16.324 32.258 21.154L37.87 37.07Q39.802 42.406 41.803 45.557Q43.804 48.708 45.46 50.295Q47.116 51.882 48.91 52.526Q50.704 53.17 51.877 53.17Q53.05 53.17 53.97 52.986L54.016 53.446Q51.808 54.182 49.692 54.182Q47.576 54.182 45.46 53.101Q43.344 52.02 41.504 50.088Q37.548 46.086 34.788 37.898L32.994 32.654H20.39L17.216 40.842Q16.986 41.394 16.986 41.946Q16.986 42.498 17.469 43.119Q17.952 43.74 18.964 43.74H19.332V44.2H10.086V43.74H10.5Q11.604 43.74 12.662 43.073Q13.72 42.406 14.41 41.072L25.818 13.748Q23.334 10.206 19.654 10.206Q17.998 10.206 16.112 10.896ZM20.896 31.274H32.534L28.9 20.556Q27.842 17.474 26.968 15.726Z"/>
 </svg>
