@@ -90,10 +90,11 @@ curl -s -X POST localhost:4318/v1/traces \
 
 ## Status
 
-Early stage — scaffolding in place, core engine under construction. The pure
-sampling engine ([`internal/sampling`](internal/sampling)) and ClickHouse writer
-([`internal/clickhouse`](internal/clickhouse)) are the growth areas; look for
-`TODO(core)` markers. Watch or star to follow along.
+**v0.1.0** shipped 2026-09-10. Next cycle: [v0.2.0 roadmap](docs/roadmap-v0.2.md)
+(performance evidence under concurrent load, ops hardening, probabilistic policy).
+The pure sampling engine ([`internal/sampling`](internal/sampling)) and ClickHouse
+writer ([`internal/clickhouse`](internal/clickhouse)) remain the core growth areas.
+Watch or star to follow along.
 
 ## Visual language
 
