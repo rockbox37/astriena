@@ -20,6 +20,7 @@ help:
 	@echo "  make test-bench - cheap head-to-head verification (Collector/contrib; see docs/benchmarks.md)"
 	@echo "  make bench      - benchmark the sampling engine (offline; see docs/benchmarks.md)"
 	@echo "  make bench-h2h  - Astriena vs stock tail_sampling (Collector/contrib; 20k traces)"
+	@echo "  make bench-h2h-concurrent - concurrent ingest h2h (workers 1/4/8/NumCPU; see docs/benchmarks.md)"
 	@echo "  make lint       - go vet the pure core (offline)"
 	@echo "  make tidy       - go mod tidy (root + bench)"
 	@echo "  make builder  - install the OpenTelemetry Collector Builder"
@@ -75,6 +76,10 @@ bench:
 .PHONY: bench-h2h
 bench-h2h:
 	go test -C bench -run '^$$' -bench . -benchmem -benchtime=20000x
+
+.PHONY: bench-h2h-concurrent
+bench-h2h-concurrent:
+	go test -C bench -run '^$$' -bench BenchmarkConcurrentConsume -benchmem -benchtime=20000x
 
 .PHONY: lint
 lint:

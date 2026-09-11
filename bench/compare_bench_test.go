@@ -2,7 +2,9 @@ package bench
 
 import (
 	"context"
+	"fmt"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 // Run:
 //
 //	make bench-h2h
+//	make bench-h2h-concurrent
 //	go test -C bench -run '^$' -bench . -benchmem -benchtime=20000x
 //
 // Memory figures stabilize at large N; 20 000 is the documented comparison
@@ -114,6 +117,86 @@ func BenchmarkBufferBytes(b *testing.B) {
 			runtime.KeepAlive(gen)
 		})
 	}
+}
+
+// BenchmarkConcurrentConsume exercises the same ingest path as BenchmarkConsume
+// with N worker goroutines calling ConsumeTraces on one shared processor — the
+// load shape lock striping (#8/#16) was built for. GOMAXPROCS is set to N for
+// each sub-benchmark; worker counts are 1, 4, 8, and runtime.NumCPU() (deduped).
+func BenchmarkConcurrentConsume(b *testing.B) {
+	w := defaultWorkload(4096)
+	gen := genBatches(w)
+	cfg := procCfg{
+		decisionWait: 30 * time.Second,
+		maxTraces:    10_000,
+	}
+	ctx := context.Background()
+
+	for _, workers := range concurrencyLevels() {
+		workers := workers
+		for _, name := range []string{"astriena", "stock"} {
+			b.Run(fmt.Sprintf("workers=%d/%s", workers, name), func(b *testing.B) {
+				prevProcs := runtime.GOMAXPROCS(workers)
+
+				sink := &consumertest.TracesSink{}
+				p, err := startNamed(name, sink, cfg)
+				if err != nil {
+					b.Fatal(err)
+				}
+				defer func() {
+					shutdown(p)
+					runtime.GOMAXPROCS(prevProcs)
+				}()
+
+				var seq atomic.Uint64
+				var consumeErr atomic.Value
+
+				b.ReportAllocs()
+				b.SetParallelism(workers)
+				b.ResetTimer()
+				b.RunParallel(func(pb *testing.PB) {
+					for pb.Next() {
+						if consumeErr.Load() != nil {
+							return
+						}
+						i := seq.Add(1)
+						td := cloneTraces(gen.batches[i%uint64(len(gen.batches))])
+						rewriteTraceID(td, i)
+						if err := p.ConsumeTraces(ctx, td); err != nil {
+							consumeErr.Store(err)
+							return
+						}
+					}
+				})
+				if err := consumeErr.Load(); err != nil {
+					b.Fatalf("ConsumeTraces: %v", err)
+				}
+				b.StopTimer()
+				if name == "stock" {
+					drainStock()
+				}
+			})
+		}
+	}
+}
+
+// concurrencyLevels returns 1, 4, 8, and runtime.NumCPU(), deduplicated and
+// sorted, for the concurrent ingest sub-benchmarks.
+func concurrencyLevels() []int {
+	n := runtime.NumCPU()
+	seen := make(map[int]struct{}, 4)
+	out := make([]int, 0, 4)
+	for _, g := range []int{1, 4, 8, n} {
+		if g < 1 {
+			continue
+		}
+		if _, ok := seen[g]; ok {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
+	}
+	return out
 }
 
 func startNamed(name string, sink *consumertest.TracesSink, cfg procCfg) (processor.Traces, error) {
