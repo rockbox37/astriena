@@ -9,6 +9,11 @@ pinned released versions.
 ## [Unreleased]
 
 ### Added
+- ClickHouse integration tests now run in CI (`clickhouse-integration` job) against
+  a real `clickhouse/clickhouse-server:24` service container, so regressions in the
+  `clickhouse-go/v2` driver binding are caught without a maintainer laptop. Gated on
+  a server health check; starts non-blocking (`continue-on-error`) pending promotion
+  to a required check. v0.2.0 P1 (#34).
 - Concurrent ingest head-to-head benchmark (`BenchmarkConcurrentConsume` in
   `bench/`, `make bench-h2h-concurrent`): N worker goroutines share one processor
   so the 64-stripe lock striping is exercised under parallel `ConsumeTraces`.

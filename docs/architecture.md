@@ -113,7 +113,7 @@ astriena/
 │   ├── astrienasampler/          # thin Collector processor adapter (own go.mod)
 │   └── clickhouseexporter/       # thin Collector exporter adapter (own go.mod)
 ├── bench/                        # head-to-head vs stock tail_sampling (own go.mod)
-└── .github/workflows/ci.yml      # CI: pure core + adapters + h2h + distro build
+└── .github/workflows/ci.yml      # CI pipeline (jobs defined in the workflow)
 ```
 
 ### Modules
