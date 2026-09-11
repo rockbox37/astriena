@@ -61,9 +61,9 @@ func TestMaxTracesBoundsBuffer(t *testing.T) {
 	if got := eng.NotSampled(); got != 1 {
 		t.Fatalf("NotSampled() = %d, want 1 (first trace evicted at cap)", got)
 	}
-	orderLen, traceLen := eng.bufferStateForTest()
-	if orderLen != 1 || traceLen != 1 {
-		t.Fatalf("buffer state order=%d traces=%d, want 1/1 (second trace retained)", orderLen, traceLen)
+	orderLen, pendingLen, traceLen := eng.bufferStateForTest()
+	if orderLen != 1 || pendingLen != 1 || traceLen != 1 {
+		t.Fatalf("buffer state order=%d pending=%d traces=%d, want 1/1/1 (second trace retained)", orderLen, pendingLen, traceLen)
 	}
 }
 
@@ -313,18 +313,21 @@ func TestBufferIndexAndOrderStayConsistent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
-	if ln, mn := eng.bufferStateForTest(); ln != mn {
+	if ln, _, mn := eng.bufferStateForTest(); ln != mn {
 		t.Fatalf("after consume: order.Len()=%d, len(traces)=%d, want equal", ln, mn)
 	}
-	if _, mn := eng.bufferStateForTest(); mn != 3 {
-		t.Fatalf("expected 3 buffered pending traces, got %d", mn)
+	if _, pn, mn := eng.bufferStateForTest(); mn != 3 || pn != 3 {
+		t.Fatalf("expected 3 buffered pending traces, got traces=%d pending=%d", mn, pn)
+	}
+	if pn := eng.pendingTraceCountForTest(); pn != 3 {
+		t.Fatalf("pendingTraceCountForTest() = %d, want 3", pn)
 	}
 
 	// Expire the rest and confirm both structures drain to empty.
 	clk = base.Add(2 * time.Second)
 	eng.expire()
-	if ln, mn := eng.bufferStateForTest(); ln != 0 || mn != 0 {
-		t.Fatalf("after expiry: order.Len()=%d, len(traces)=%d, want 0/0", ln, mn)
+	if ln, pn, mn := eng.bufferStateForTest(); ln != 0 || mn != 0 || pn != 0 {
+		t.Fatalf("after expiry: order=%d pending=%d traces=%d, want 0/0/0", ln, pn, mn)
 	}
 	if got := eng.NotSampled(); got != 3 {
 		t.Fatalf("NotSampled()=%d, want 3", got)
@@ -719,9 +722,83 @@ func TestConcurrentConsumeMaintainsBufferConsistency(t *testing.T) {
 			t.Fatalf("worker Consume: %v", err)
 		}
 	}
-	orderLen, traceLen := eng.bufferStateForTest()
+	orderLen, pendingLen, traceLen := eng.bufferStateForTest()
 	if orderLen != traceLen {
 		t.Fatalf("order.Len()=%d, trace count=%d, want equal under concurrency", orderLen, traceLen)
+	}
+	if pendingLen != eng.pendingTraceCountForTest() {
+		t.Fatalf("pendingOrder.Len()=%d, pending trace count=%d, want equal under concurrency", pendingLen, eng.pendingTraceCountForTest())
+	}
+}
+
+func TestMaxTracesEvictsPastHeldSampledAtHead(t *testing.T) {
+	sink := &recordingSink{}
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    3,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+
+	// Two keep-worthy traces held at DecisionSampled after sink failure sit at
+	// the front of order; eviction must not scan past them to find Pending.
+	for _, id := range []byte{0x41, 0x42} {
+		if err := eng.Consume(context.Background(), []*Span{
+			{TraceID: TraceID{id}, StatusCode: "ERROR"},
+		}); err == nil {
+			t.Fatalf("trace %x: expected sink error", id)
+		}
+	}
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x43}, StatusCode: "OK"},
+	}); err != nil {
+		t.Fatalf("Consume pending OK: %v", err)
+	}
+	if _, pendingLen, traceLen := eng.bufferStateForTest(); traceLen != 3 || pendingLen != 1 {
+		t.Fatalf("before cap pressure: traces=%d pending=%d, want 3/1", traceLen, pendingLen)
+	}
+
+	eng.sink = sink
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x44}, StatusCode: "ERROR"},
+	}); err != nil {
+		t.Fatalf("Consume new ERROR at cap: %v", err)
+	}
+	if got := eng.Dropped(); got != 0 {
+		t.Fatalf("Dropped() = %d, want 0 (oldest Pending evicted, not incoming)", got)
+	}
+	if got := eng.NotSampled(); got != 1 {
+		t.Fatalf("NotSampled() = %d, want 1 (oldest Pending 0x43 evicted)", got)
+	}
+	if counts := eng.BufferedSpanCounts([]TraceID{{0x41}, {0x42}, {0x43}, {0x44}}); counts[TraceID{0x43}] != 0 {
+		t.Fatalf("oldest Pending trace 0x43 should have been evicted")
+	}
+	if len(sink.got) != 1 || sink.got[0][0].TraceID != (TraceID{0x44}) {
+		t.Fatalf("expected new ERROR trace sampled, got %d batches", len(sink.got))
+	}
+	if _, pendingLen, traceLen := eng.bufferStateForTest(); traceLen != 2 || pendingLen != 0 {
+		t.Fatalf("after eviction: traces=%d pending=%d, want 2/0 (two held Sampled only)", traceLen, pendingLen)
+	}
+}
+
+func TestPendingIndexConsistentAfterSinkFailure(t *testing.T) {
+	eng := NewEngine(Config{
+		DecisionWait: time.Hour,
+		MaxTraces:    100,
+		Policies:     []Policy{StatusCodePolicy{Keep: "ERROR"}},
+	}, failingSink{err: errSink})
+
+	if err := eng.Consume(context.Background(), []*Span{
+		{TraceID: TraceID{0x51}, StatusCode: "ERROR"},
+		{TraceID: TraceID{0x52}, StatusCode: "OK"},
+	}); err == nil {
+		t.Fatal("expected sink error")
+	}
+	_, pendingLen, traceLen := eng.bufferStateForTest()
+	if traceLen != 2 || pendingLen != 1 {
+		t.Fatalf("after sink failure: traces=%d pending=%d, want 2/1", traceLen, pendingLen)
+	}
+	if pendingLen != eng.pendingTraceCountForTest() {
+		t.Fatalf("pendingOrder out of sync with actual Pending traces")
 	}
 }
 

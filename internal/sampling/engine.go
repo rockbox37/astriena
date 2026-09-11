@@ -61,6 +61,10 @@ type Trace struct {
 	// elem is this trace's node in the engine's arrival-ordered list, held so it
 	// can be unlinked in O(1) when the trace is decided or expired.
 	elem *list.Element
+	// pendingElem is this trace's node in the pending-only arrival list, held so
+	// MaxTraces eviction can reach the oldest Pending trace in O(1) without
+	// scanning non-Pending traces (e.g. DecisionSampled held after sink failure).
+	pendingElem *list.Element
 	// touchedGen marks the last Consume generation that added a span to this
 	// trace, so a single batch evaluates each touched trace exactly once.
 	touchedGen uint64
@@ -119,7 +123,7 @@ func stripeIndex(id TraceID) int {
 // by Start. This default-drop is what realizes the ingestion reduction: redundant
 // traces leave the buffer instead of piling up until MaxTraces evicts new ones.
 //
-// Two structures keep the hot path off O(n) per batch:
+// Three structures keep the hot path off O(n) per batch:
 //   - traces indexes buffered traces by id for O(1) lookup on ingest, sharded
 //     across numStripes lock stripes so concurrent batches contend on separate
 //     mutexes instead of one global lock.
@@ -128,6 +132,10 @@ func stripeIndex(id TraceID) int {
 //     the front while it is due and stops at the first trace that is not — O(k)
 //     in the number actually expiring, not O(n) in the buffer. A trace decided
 //     early is unlinked in O(1) via the *list.Element it holds.
+//   - pendingOrder mirrors arrival order for Pending traces only so MaxTraces
+//     eviction reaches the oldest evictable trace in O(1) even when non-Pending
+//     traces (e.g. DecisionSampled held after sink failure) sit at the front of
+//     order.
 //
 // Consume also re-evaluates only the traces the current batch touched, not the
 // whole buffer: policies are pure functions of a trace's spans, so a trace that
@@ -135,8 +143,8 @@ func stripeIndex(id TraceID) int {
 // batches O(total spans) rather than O(n^2) in buffer size.
 //
 // MaxTraces is enforced as a hard memory bound. When the cap is reached and a
-// new trace arrives, the engine evicts the oldest still-Pending trace from the
-// front of order (O(1) lookup) rather than dropping the incoming span. If every
+// new trace arrives, the engine evicts the oldest still-Pending trace via
+// pendingOrder (O(1)) rather than dropping the incoming span. If every
 // buffered trace is non-Pending (e.g. held at DecisionSampled after a sink
 // failure), the new span is dropped as before.
 type Engine struct {
@@ -153,6 +161,7 @@ type Engine struct {
 	ingestMu                sync.Mutex
 	orderMu                 sync.Mutex
 	order                   *list.List // *Trace in arrival order; front is oldest (see above)
+	pendingOrder            *list.List // Pending *Trace only, same arrival order as order
 	droppedMaxTraces        atomic.Int64
 	droppedMaxSpansPerTrace atomic.Int64
 	notSampled              atomic.Int64
@@ -178,7 +187,8 @@ func NewEngine(cfg Config, sink Sink) *Engine {
 		cfg:   cfg,
 		sink:  sink,
 		now:   time.Now,
-		order: list.New(),
+		order:        list.New(),
+		pendingOrder: list.New(),
 	}
 	for i := range e.stripes {
 		e.stripes[i].traces = make(map[TraceID]*Trace)
@@ -422,6 +432,7 @@ func (e *Engine) ingestSpan(now time.Time, s *Span, batchGen uint64, touched *[]
 			t = &Trace{ID: s.TraceID, Arrived: now}
 			st.traces[s.TraceID] = t
 			t.elem = e.order.PushBack(t)
+			t.pendingElem = e.pendingOrder.PushBack(t)
 		}
 	}
 	e.appendSpanUnderStripeLock(t, s, batchGen, touched)
@@ -485,23 +496,31 @@ func (e *Engine) removeLocked(t *Trace) {
 		e.order.Remove(t.elem)
 		t.elem = nil
 	}
+	e.unlinkPendingLocked(t)
+}
+
+// unlinkPendingLocked removes t from pendingOrder when it is no longer Pending.
+// orderMu must be held.
+func (e *Engine) unlinkPendingLocked(t *Trace) {
+	if t.pendingElem != nil {
+		e.pendingOrder.Remove(t.pendingElem)
+		t.pendingElem = nil
+	}
 }
 
 // evictOldestPendingLocked removes the oldest still-Pending trace from the
 // buffer to make room at MaxTraces. orderMu must be held. Returns false when
 // every buffered trace is non-Pending and nothing could be evicted.
 func (e *Engine) evictOldestPendingLocked() bool {
-	for elem := e.order.Front(); elem != nil; elem = elem.Next() {
-		t := elem.Value.(*Trace)
-		if t.decision != DecisionPending {
-			continue
-		}
-		t.decision = DecisionNotSampled
-		e.notSampled.Add(1)
-		e.removeLocked(t)
-		return true
+	elem := e.pendingOrder.Front()
+	if elem == nil {
+		return false
 	}
-	return false
+	t := elem.Value.(*Trace)
+	t.decision = DecisionNotSampled
+	e.notSampled.Add(1)
+	e.removeLocked(t)
+	return true
 }
 
 // decideLocked applies the policies to one still-Pending trace. The first
@@ -529,6 +548,7 @@ func (e *Engine) decideLocked(ctx context.Context, t *Trace) error {
 		if d == DecisionSampled {
 			if err := e.sink.ConsumeSampled(ctx, t.Spans); err != nil {
 				t.decision = DecisionSampled
+				e.unlinkPendingLocked(t)
 				return err
 			}
 			e.sampledSpans.Add(int64(len(t.Spans)))
@@ -612,11 +632,12 @@ func (e *Engine) expireLockedSkip(now time.Time, force bool, skip map[TraceID]st
 	}
 }
 
-// bufferStateForTest returns the arrival-list length and total buffered trace
-// count. It is used by tests to verify index/list consistency.
-func (e *Engine) bufferStateForTest() (orderLen, traceLen int) {
+// bufferStateForTest returns the arrival-list length, pending-list length, and
+// total buffered trace count. It is used by tests to verify index/list consistency.
+func (e *Engine) bufferStateForTest() (orderLen, pendingLen, traceLen int) {
 	e.orderMu.Lock()
 	orderLen = e.order.Len()
+	pendingLen = e.pendingOrder.Len()
 	e.orderMu.Unlock()
 	for i := range e.stripes {
 		st := &e.stripes[i]
@@ -624,5 +645,21 @@ func (e *Engine) bufferStateForTest() (orderLen, traceLen int) {
 		traceLen += len(st.traces)
 		st.mu.Unlock()
 	}
-	return orderLen, traceLen
+	return orderLen, pendingLen, traceLen
+}
+
+// pendingTraceCountForTest returns how many buffered traces are still Pending.
+func (e *Engine) pendingTraceCountForTest() int {
+	count := 0
+	for i := range e.stripes {
+		st := &e.stripes[i]
+		st.mu.Lock()
+		for _, t := range st.traces {
+			if t.decision == DecisionPending {
+				count++
+			}
+		}
+		st.mu.Unlock()
+	}
+	return count
 }
