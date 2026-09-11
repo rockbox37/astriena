@@ -66,7 +66,8 @@ func BenchmarkConsume(b *testing.B) {
 // the live-heap delta per trace. The generated pdata is allocated before the
 // first heap sample, so it cancels out of the delta — what remains is what
 // each processor copied and indexed. The ratio of the two heapB/trace figures
-// is the "fraction of the memory of the stock processor" claim.
+// measures in-flight heap at the adapter boundary; see docs/benchmarks.md for
+// the current reading and what it does and does not support.
 func BenchmarkBufferBytes(b *testing.B) {
 	cfg := procCfg{
 		decisionWait: 30 * time.Second,

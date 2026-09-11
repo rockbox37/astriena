@@ -4,8 +4,8 @@
 <h1 align="center">Astriena</h1>
 <p align="center"><em>of the stars</em></p>
 
-> **A focused OpenTelemetry distribution with a sampling engine that uses a
-> fraction of the memory of the stock processor — none of the plugin bloat.**
+> **A focused OpenTelemetry distribution that cuts trace egress ~80% at the
+> source, with a framework-free sampling engine — none of the plugin bloat.**
 
 Astriena is an OpenTelemetry-native observability engine built as a **Bring Your
 Own Storage (BYOS)** alternative to incumbent SaaS vendors. It speaks OTLP in,
@@ -16,9 +16,17 @@ applies dynamic tail sampling, and writes compressed telemetry directly into you
 
 - **Zero telemetry markup (BYOS)** — data lands in your own storage (~$0.02/GB)
   instead of incumbent write costs of $0.10–$0.65/GB.
-- **~80% ingestion reduction** — stateless tail sampling drops redundant `200 OK`
-  traces before outbound transmission, retaining 100% of errors, latency spikes,
-  and high-cardinality metadata.
+- **~80% ingestion reduction** — tail sampling drops redundant `200 OK` traces
+  before outbound transmission, retaining 100% of errors, latency spikes, and
+  high-cardinality metadata. This is the wedge: less data written, less stored.
+- **Cheaper per-call ingest** — `ConsumeTraces` makes ~23% fewer allocations per
+  trace than the stock `tail_sampling` processor, and moves ~19% fewer bytes —
+  figures that reproduce run to run, unlike wall-clock timings. See
+  [docs/benchmarks.md](docs/benchmarks.md) for the integers and their caveats.
+- **Bounded, measured memory** — the engine's per-trace bookkeeping is documented
+  and capped by `MaxTraces`. At the *adapter* boundary, where span payloads
+  dominate, in-flight heap is a **tie** with the stock processor — and we say so
+  ([benchmarks](docs/benchmarks.md)) rather than claim an advantage.
 - **No cardinality traps or lock-in** — pure OTLP ingress and standard ClickHouse SQL.
 
 ## How it works

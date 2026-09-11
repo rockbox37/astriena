@@ -13,10 +13,12 @@ import (
 // This file benchmarks the pure engine in isolation — no Collector, no OTLP —
 // which is what architecture.md calls for ("benchmark the engine in isolation";
 // "Benchmark this package against the stock tail_sampling processor before
-// optimizing"). It measures the two dimensions the README sells:
+// optimizing"). It measures two dimensions:
 //
-//   - buffer memory per in-flight trace — the "fraction of the memory of the
-//     stock processor" claim (BenchmarkEngineBufferBytes);
+//   - buffer memory per in-flight trace — the engine's own bookkeeping cost
+//     (BenchmarkEngineBufferBytes). Engine-side only; the adapter-level
+//     comparison against stock lives in bench/ and is recorded in
+//     docs/benchmarks.md;
 //   - ingest throughput and allocations, plus the realized keep ratio — the
 //     "~80% ingestion reduction" claim (BenchmarkEngineConsume).
 //
@@ -151,7 +153,8 @@ func BenchmarkEngineConsume(b *testing.B) {
 }
 
 // BenchmarkEngineBufferBytes measures the engine's steady-state memory cost per
-// buffered in-flight trace — the heart of the "fraction of the memory" claim.
+// buffered in-flight trace — the isolation figure recorded in
+// docs/benchmarks.md.
 // b.N traces are held Pending (DecisionWait=0 disables expiry and no policy
 // matches), and the live-heap delta is attributed per trace. Run with a large
 // -benchtime (e.g. -benchtime=200000x) so the heap sample is stable.
