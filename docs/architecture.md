@@ -146,6 +146,8 @@ ASTRIENA_CLICKHOUSE_DSN=clickhouse://localhost:9000/astriena \
 For self-telemetry (Prometheus scrape endpoint, metric catalog, alert hints), see
 [`observability.md`](observability.md).
 
+For the active release plan, see [`roadmap-v0.2.md`](roadmap-v0.2.md).
+
 ## Releasing (for the private cloud repo to consume)
 
 `astriena` is the upstream source of truth. Cut **semver git tags**; publish the

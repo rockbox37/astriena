@@ -8,6 +8,11 @@ pinned released versions.
 
 ## [Unreleased]
 
+### Added
+- v0.2.0 roadmap in `docs/roadmap-v0.2.md` — prioritized P0/P1/P2 items for the
+  next release cycle (concurrent bench, pending eviction index, CI integration,
+  positioning alignment, health extension, probabilistic policy).
+
 ## [0.1.0] - 2026-09-10
 
 First tagged release: custom OpenTelemetry Collector distribution with
