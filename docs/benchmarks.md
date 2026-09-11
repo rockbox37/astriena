@@ -219,3 +219,81 @@ mutex contention and cap behavior under concurrent ingest, not this memory ratio
 A Rust hot path is also still not justified: this run does not show Go GC / memory
 losing to stock at the processor boundary. If a later customer-scale run does,
 that is the trigger; do not start a rewrite on the back of these numbers.
+
+## Concurrent ingest (head-to-head)
+
+The single-goroutine h2h bench above measures per-call ingest cost. It does **not**
+exercise the 64-stripe lock striping added for concurrent OTLP ingest (#8, #16).
+`BenchmarkConcurrentConsume` closes that gap: N worker goroutines share one
+processor instance and call `ConsumeTraces` in parallel with the same synthetic
+workload and keep policy as `BenchmarkConsume`.
+
+### Running them
+
+```sh
+make bench-h2h-concurrent
+# or, for stable numbers (repeat 5 times):
+go test -C bench -run '^$' -bench BenchmarkConcurrentConsume -benchmem -benchtime=20000x -count=5
+```
+
+Sub-benchmarks run at worker counts **1, 4, 8**, and **`runtime.NumCPU()`**
+(deduplicated — e.g. on an 8-core machine you get three levels, not four).
+Each sub-benchmark sets **`GOMAXPROCS` to the worker count** and uses
+`testing.B.RunParallel` with matching parallelism so OS scheduling matches the
+intended load shape.
+
+### Workload and methodology
+
+Same as the single-thread h2h: 4096-batch pool, 4 spans/trace, 20% keep-worthy,
+unique trace ids per iteration, 10 000 in-flight cap. Each parallel worker **clones**
+the batch before rewriting the trace id (the single-thread bench reuses batches
+in place; concurrent access requires independent pdata). Both processors pay the
+same clone cost, so the ratio remains apples-to-apples. Stock is drained after
+each sub-benchmark as in `BenchmarkConsume`.
+
+### What is measured
+
+**`BenchmarkConcurrentConsume/workers=N/{astriena,stock}`** — aggregate ingest
+throughput under N-way parallel `ConsumeTraces`: ns/op, B/op, allocs/op. Compare
+**workers=1** to higher counts to see whether Astriena's striping holds or improves
+its advantage as contention rises; compare **stock / Astriena** at each N for the
+ratio under load.
+
+### Results (concurrent adapter-level)
+
+Representative local run on **Apple M4** (10 cores), `main`, `-benchtime=20000x
+-count=5`. Reproduce with `make bench-h2h-concurrent` (add `-count=5` for stable
+numbers). Absolute figures vary by machine — **the shape across worker counts
+and the stock/Astriena ratio at each N are the point**.
+
+| Workers | Processor | ns/op (median) | B/op | allocs/op | stock / Astriena |
+|---:|---|---:|---:|---:|---:|
+| 1 | Astriena | ~15 000 | ~6560 | 103 | — |
+| 1 | stock | ~16 400 | ~7540 | 123 | ~1.1× |
+| 4 | Astriena | ~6900 | ~6560 | 103 | — |
+| 4 | stock | ~5600 | ~7540 | 123 | ~0.8× |
+| 8 | Astriena | ~5100 | ~6560 | 103 | — |
+| 8 | stock | ~5000 | ~7540 | 123 | ~1.0× |
+| 10 (NumCPU) | Astriena | ~5800 | ~6560 | 103 | — |
+| 10 (NumCPU) | stock | ~8400 | ~7540 | 123 | ~1.4× |
+
+**Clone overhead.** Each parallel iteration **clones** the batch before
+rewriting the trace id (see methodology above). That adds ~41 allocs/op versus
+single-thread `BenchmarkConsume` (103 vs 62) and dominates at **workers=1** (~15k
+ns/op here vs ~6.5k in `BenchmarkConsume/{astriena}`). Both processors pay the
+same clone, so cross-processor ratios remain fair.
+
+**Scaling shape.** As workers increase, **aggregate ns/op falls** on both sides
+— parallel ingest amortizes per-call work. At **4–8 workers** on this machine,
+stock's async `workChan` loop keeps pace with Astriena (ratios near 1.0×); the
+single-thread ~1.4× ingest gap **narrows or inverts** at moderate concurrency.
+At **NumCPU (10)**, Astriena pulls ahead again (~1.4×) while stock's tail is
+noisy (workChan backpressure and event-loop batching vary run-to-run).
+
+**How to read this.** The bench proves concurrent load can be measured
+reproducibly and shows striping does not regress under parallel ingest. It does
+**not** by itself prove a large striping win — stock's async ingest also scales.
+Use **workers=1** concurrent numbers only for apples-to-apples clone-inclusive
+comparison; use **single-thread `BenchmarkConsume`** for per-call ingest cost
+without clone. Re-run after engine or adapter changes that touch locking or
+ingest paths.

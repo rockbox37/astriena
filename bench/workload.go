@@ -93,6 +93,12 @@ func genBatches(w workload) generated {
 	return out
 }
 
+func cloneTraces(src ptrace.Traces) ptrace.Traces {
+	dst := ptrace.NewTraces()
+	src.CopyTo(dst)
+	return dst
+}
+
 func traceIDOf(td ptrace.Traces) pcommon.TraceID {
 	return td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0).TraceID()
 }
