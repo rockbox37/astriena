@@ -62,14 +62,14 @@ metric catalog and suggested alerts.
 ### Run from GHCR
 
 Release images are published to `ghcr.io/rockbox37/astriena` (tag matches the
-GitHub release, e.g. `v0.1.0`). OTLP listens on `:4317` (gRPC) and `:4318` (HTTP);
+GitHub release, e.g. `v0.1.0`) for `linux/amd64` and `linux/arm64` (native on
+Apple Silicon). OTLP listens on `:4317` (gRPC) and `:4318` (HTTP);
 self-metrics on `:8888/metrics` — see [docs/observability.md](docs/observability.md).
 
 ```sh
 make clickhouse-up   # or use your own cluster
 
 docker run -d --name astriena \
-  --platform linux/amd64 \   # required on Apple Silicon (image is amd64-only for now)
   -p 4317:4317 -p 4318:4318 -p 8888:8888 \
   -e ASTRIENA_CLICKHOUSE_DSN=clickhouse://host.docker.internal:9000/astriena \
   ghcr.io/rockbox37/astriena:v0.1.0
