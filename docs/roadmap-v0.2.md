@@ -44,14 +44,14 @@ Tracking issue: see GitHub issue **v0.2.0 roadmap** (label `milestone`).
 - Regression tests for cap pressure with mixed Pending / Sampled-held / decided traces at list head. **Shipped.**
 - Re-run isolation + concurrent benches after the change.
 
-### 3. ClickHouse integration tests in CI
+### 3. ClickHouse integration tests in CI ✅
 
-**Why:** [`components/clickhouseexporter/integration_test.go`](../components/clickhouseexporter/integration_test.go) and [`docs/clickhouse-integration.md`](clickhouse-integration.md) exist, but [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs unit tests only. Regressions in the real driver binding currently require a maintainer laptop.
+**Why:** [`components/clickhouseexporter/integration_test.go`](../components/clickhouseexporter/integration_test.go) and [`docs/clickhouse-integration.md`](clickhouse-integration.md) existed, but [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) ran unit tests only. Regressions in the real driver binding required a maintainer laptop.
 
 **Deliverables:**
-- CI job with a ClickHouse service container (or `make clickhouse-up` equivalent).
-- `CLICKHOUSE_DSN` wired; `go test -tags=integration` on `clickhouseexporter`.
-- Document any flake/retry policy; keep job optional or non-blocking initially if startup is slow, then promote to required once stable.
+- CI job with a ClickHouse service container (or `make clickhouse-up` equivalent). **Shipped** — `clickhouse-integration` in `.github/workflows/ci.yml`.
+- `CLICKHOUSE_DSN` wired; `go test -tags=integration` on `clickhouseexporter`. **Shipped** via `make test-integration`.
+- Document any flake/retry policy; keep job optional or non-blocking initially if startup is slow, then promote to required once stable. **Partly shipped** — non-blocking via `continue-on-error: true`; the promotion criterion and the absence of a flake/retry policy are recorded in `docs/clickhouse-integration.md`.
 
 ### 4. README / positioning alignment with benchmark evidence ✅
 

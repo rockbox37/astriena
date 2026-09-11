@@ -42,6 +42,36 @@ jobs:
           go-version: "1.26"
       - run: go -C bench test -short ./...
 
+  clickhouse-integration:
+    name: clickhouse exporter (integration, real server)
+    runs-on: ubuntu-latest
+    # Bounds module download and compile, which go test's own timeout does not.
+    timeout-minutes: 10
+    # Non-blocking; promotion criterion in docs/clickhouse-integration.md#ci
+    continue-on-error: true
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "clickhouse-client --query 'SELECT 1'"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+          --health-start-period 10s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          # No go.sum at the repo root, so setup-go's default lookup caches nothing.
+          cache-dependency-path: components/clickhouseexporter/go.sum
+      - name: Run integration tests
+        env:
+          CLICKHOUSE_DSN: clickhouse://localhost:9000/default
+        run: make test-integration
+
   distro:
     name: full distribution (ocb build)
     runs-on: ubuntu-latest
