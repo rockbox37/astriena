@@ -1,7 +1,6 @@
 # OpenTelemetry Collector Builder (ocb) manifest for the Astriena distribution.
 #
-# "A focused OpenTelemetry distribution with a sampling engine that uses a
-#  fraction of the memory of the stock processor — none of the plugin bloat."
+# Positioning: see README.md and docs/architecture.md.
 #
 # Build with:  make build   (installs the builder and runs it against this file)
 #

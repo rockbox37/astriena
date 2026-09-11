@@ -9,9 +9,31 @@ pinned released versions.
 ## [Unreleased]
 
 ### Added
+- Concurrent ingest head-to-head benchmark (`BenchmarkConcurrentConsume` in
+  `bench/`, `make bench-h2h-concurrent`): N worker goroutines share one processor
+  so the 64-stripe lock striping is exercised under parallel `ConsumeTraces`.
+  Methodology, clone overhead, and results across workers 1/4/8/NumCPU recorded
+  in `docs/benchmarks.md`. v0.2.0 P0 (#34).
+- O(1) pending index for `MaxTraces` eviction: a pending-only arrival list
+  (`pendingOrder`) so `evictOldestPendingLocked` no longer scans past
+  `DecisionSampled`-held traces at the head of the buffer under cap pressure.
+  Eviction was degrading toward O(n) per admission when a sink retry or pending
+  expiry held decided traces at the front. Regression tests cover cap pressure
+  with mixed Pending / Sampled-held / decided traces. v0.2.0 P1 (#34).
 - v0.2.0 roadmap in `docs/roadmap-v0.2.md` — prioritized P0/P1/P2 items for the
   next release cycle (concurrent bench, pending eviction index, CI integration,
   positioning alignment, health extension, probabilistic policy).
+
+### Changed
+- Positioning now leads with the claims the benchmarks support. The README,
+  `docs/architecture.md`, and the `builder-config.yaml` header no longer claim
+  "a fraction of the memory of the stock processor" — head-to-head shows
+  adapter-level in-flight heap at **~0.97–1.02×** stock. They lead with **~80%
+  ingestion reduction** and **cheaper per-call ingest** (63 vs 82 allocs/op)
+  instead, with memory framed as engine bookkeeping (~210–230 B/trace in
+  isolation) rather than an adapter-level advantage. Recorded ns/op figures are
+  flagged as pending re-measurement rather than cited as a ratio. Benchmark
+  comments in `internal/sampling` and `bench/` updated to match. v0.2.0 P1 (#34).
 
 ## [0.1.0] - 2026-09-10
 

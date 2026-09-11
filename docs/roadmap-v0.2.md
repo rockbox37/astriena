@@ -20,7 +20,7 @@ Tracking issue: see GitHub issue **v0.2.0 roadmap** (label `milestone`).
 
 ## P0 — must ship
 
-### 1. Concurrent ingest benchmark
+### 1. Concurrent ingest benchmark ✅
 
 **Why:** v0.1.0 landed 64-stripe lock striping (#8, #16) specifically for concurrent OTLP ingest, but [`bench/compare_bench_test.go`](../bench/compare_bench_test.go) is single-goroutine. [`docs/benchmarks.md`](benchmarks.md) explicitly notes the h2h bench *cannot exercise* mutex-contention wins.
 
@@ -53,13 +53,13 @@ Tracking issue: see GitHub issue **v0.2.0 roadmap** (label `milestone`).
 - `CLICKHOUSE_DSN` wired; `go test -tags=integration` on `clickhouseexporter`.
 - Document any flake/retry policy; keep job optional or non-blocking initially if startup is slow, then promote to required once stable.
 
-### 4. README / positioning alignment with benchmark evidence
+### 4. README / positioning alignment with benchmark evidence ✅
 
-**Why:** Head-to-head results show adapter-level heap at **~1.00×** stock, not "a fraction of the memory." Ingest is ~**1.4×** faster on representative runs. The README and architecture header still lead with the memory fraction claim; [`docs/benchmarks.md`](benchmarks.md) already documents the honest read.
+**Why:** Head-to-head results showed adapter-level heap at parity with stock (see [`docs/benchmarks.md`](benchmarks.md)), not "a fraction of the memory." The README and architecture header still led with the memory fraction claim, which was retired here; [`docs/benchmarks.md`](benchmarks.md) already documented the honest read.
 
 **Deliverables:**
-- Update README and architecture positioning to lead with **ingestion reduction (~80%)** and **ingest latency**, with memory framed as isolation bookkeeping (~120–180 B/trace engine overhead) rather than a supported adapter-level ratio.
-- Remove stale references to `TODO(core)` in engine.go (markers were absorbed into v0.1.0 work).
+- Update README and architecture positioning to lead with **ingestion reduction (~80%)** and **ingest allocation cost**, with memory framed as isolation bookkeeping rather than a supported adapter-level ratio. **Shipped** — also covers `builder-config.yaml` and the benchmark comments in `internal/sampling` / `bench/`. Wall-clock ingest was deliberately *not* used as a headline claim: the recorded ns/op figures predate #36 and need re-measuring on an idle machine.
+- Remove stale references to `TODO(core)` in engine.go (markers were absorbed into v0.1.0 work). **Shipped** — the last reference was in `docs/benchmarks.md`.
 
 ### 5. Health / readiness extension for orchestrators
 

@@ -6,9 +6,10 @@
 //
 // Keeping the engine pure is what lets Astriena later swap the surrounding
 // framework — or reimplement this hot path in another language (e.g. Rust) —
-// without rewriting the sampling logic. This package is also the memory wedge:
-// its buffering efficiency is what lets Astriena claim "a fraction of the memory
-// of the stock processor". See docs/architecture.md.
+// without rewriting the sampling logic. This package owns the engine-side
+// bookkeeping measured in isolation; the adapter-boundary comparison against the
+// stock processor lives in bench/. See docs/architecture.md and
+// docs/benchmarks.md for the current figures.
 package sampling
 
 import (

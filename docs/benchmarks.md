@@ -2,16 +2,26 @@
 
 Astriena's pitch rests on two measurable claims:
 
-- **"A fraction of the memory of the stock processor."**
 - **"~80% ingestion reduction"** — dropping redundant healthy traces while keeping
   100% of errors and latency spikes.
+- **Cheaper per-call ingest than the stock processor** — fewer allocations and
+  less garbage per `ConsumeTraces` (63 vs 82 allocs/op). Wall-clock latency has
+  measured lower too, but see the timings note below before citing a ratio.
 
-This document records how those are measured and the numbers as of the last run.
+A third figure is measured but **not** sold as an advantage: in-flight memory.
+The engine's own bookkeeping is ~210–230 B/trace in isolation, and at the adapter
+boundary — where span payloads dominate — heap is a tie with stock
+(~0.97–1.02×). The earlier *"a fraction of the memory of the stock processor"*
+claim was retired from the README, the architecture doc and `builder-config.yaml`
+on the strength of the numbers below.
+
+This document records how the two claims above are measured, and the numbers as
+of the last run.
 [`architecture.md`](architecture.md) calls for exactly this — *"benchmark the
 engine in isolation"* and *"benchmark this package against the stock
 `tail_sampling` processor before optimizing"* — so these numbers are the baseline
-that must exist **before** the hot-path optimizations in the `TODO(core)` note in
-[`internal/sampling/engine.go`](../internal/sampling/engine.go) are attempted.
+that must exist **before** any hot-path optimization of
+[`internal/sampling/engine.go`](../internal/sampling/engine.go) is attempted.
 
 ## Running them
 
@@ -34,15 +44,30 @@ drop.
 
 ## Results (baseline)
 
-Apple M4, `go test`, `-benchtime=200000x`. Reproduce with `make bench`; absolute
+Apple M4, `go test`, `-benchtime=200000x`, re-measured at `main` @ `8063374`
+(post-#36). Reproduce with `make bench`; absolute
 numbers are hardware-dependent — the ratios and the shape are the point.
+
+> **Timings pending re-measurement.** The allocation counts here are
+> deterministic, and the heap figures were re-measured alongside them (they stay
+> noise-sensitive — re-run at the documented `-benchtime=200000x` and take a
+> median across runs). Both are current
+> (re-measured after the O(1) pending-eviction index,
+> #36, which added one `list.Element` per buffered trace: 5 → 6 allocs/op and
+> ~161 → ~211 B/trace). The **ns/op** figures are not current — the machine
+> available when #36 landed was too loaded to time reliably, and a wall-clock
+> figure measured under load can be wrong by 2–3× in a way that looks stable
+> across `-count` samples. Re-run `make bench`, `make bench-h2h` and
+> `make bench-h2h-concurrent` on an idle machine and update the ns/op columns
+> together. Prefer interleaved A/B runs across the two commits over running all
+> of one side then all of the other.
 
 | Benchmark | Metric | Value |
 |---|---|---|
-| `BenchmarkEngineConsume` | throughput | ~222 ns per 4-span trace |
-| | allocations | 4 allocs/op, 136 B/op |
+| `BenchmarkEngineConsume` | throughput | see the note above — needs re-measurement |
+| | allocations | 6 allocs/op, 248 B/op |
 | | **realized drop rate** | **79.99 %** |
-| `BenchmarkEngineBufferBytes` | **engine bookkeeping per buffered trace** | **~120–180 heap B/trace** (varies with N as the map grows/fragments) |
+| `BenchmarkEngineBufferBytes` | **engine bookkeeping per buffered trace** | **~210–230 heap B/trace** (varies with N as the map grows/fragments) |
 
 ### What the drop rate proves
 
@@ -58,15 +83,17 @@ keep-worthy is dropped.
 `BenchmarkEngineBufferBytes` holds `b.N` traces `Pending` (expiry disabled, no
 policy match) and attributes the live-heap delta per trace. The figure is the
 engine's **own bookkeeping**: the `map[TraceID]*Trace` entry, the `Trace` struct,
-its arrival-list node (`*list.Element`), and the per-trace span-pointer slice.
+its node in the arrival list *and* its node in the pending-only list (two
+`*list.Element`s since #36), and the per-trace span-pointer slice.
 
 It **excludes** the span payloads and attribute maps — those are allocated by the
 workload generator *before* the heap is sampled, so they do not count. This is
 deliberate: the span payload exists in any processor and, in the real adapter, is
 dominated by the opaque `Span.Raw` pdata the exporter will write (see
-`toEngineSpans`). The wedge Astriena controls is the per-trace bookkeeping
-overhead, and that is what this isolates. The head-to-head below is what turns
-this into a *ratio* against the stock processor.
+`toEngineSpans`). What this benchmark isolates is the per-trace
+bookkeeping overhead Astriena controls. The head-to-head below measures a
+different quantity — adapter-level in-flight heap, where payloads dominate — and
+is where the cross-processor ratio lives.
 
 ## A finding this surfaced — and its fix: evaluate/expiry were O(n²)
 
@@ -98,14 +125,18 @@ Cost of the fix: one extra allocation per new trace (the list node), visible as
 unlinking and O(k) expiry. The hot path now also uses a **64-stripe lock-striped
 trace map** (per-trace ingest contends on `hash(trace_id) % 64` instead of one
 global mutex) and **MaxTraces eviction of the oldest still-Pending trace** from
-the arrival list rather than dropping the incoming span when room can be made.
-Isolation bench drop rate and alloc counts are unchanged at `MaxTraces=0`; re-run
+the pending-only list (`pendingOrder`, since #36) rather than dropping the
+incoming span when room can be made.
+Isolation bench drop rate is unchanged at `MaxTraces=0`. Allocation counts are
+**not**: `pendingOrder.PushBack` is unconditional, so an unlimited buffer pays
+the extra node (and 48 B) for a list that nothing reads — see the note at the end of
+this document. Re-run
 `make bench` after changing cap/eviction behavior under load.
 
 ## Head-to-head vs the stock `tail_sampling` processor
 
-The isolation numbers above are Astriena's **own** engine baseline. The
-"fraction of the memory" claim is a *ratio*, so the same workload has to run
+The isolation numbers above are Astriena's **own** engine baseline. Any
+cross-processor claim is a *ratio*, so the same workload has to run
 through the stock `tailsamplingprocessor` (opentelemetry-collector-contrib
 v0.160.0, the Collector line this distro pins) and be measured the same way.
 
@@ -168,25 +199,27 @@ Astriena's is a synchronous translate + `Engine.Consume`. They are the same
 public `ConsumeTraces` call, not the same internal work.
 
 This is the **adapter** boundary, not the isolation engine: both sides hold
-span payloads. Isolation's ~120–180 B/trace deliberately excluded those
+span payloads. Isolation's ~210–230 B/trace deliberately excluded those
 payloads; they dominate here.
 
 ### Results (adapter-level)
 
-Representative local run on **Apple M4**, `main` @ `c44b685`, `go test -C bench
--benchtime=20000x -count=5`. Reproduce with `make bench-h2h` (add `-count=5` for
+Representative local run on **Apple M4**, `go test -C bench -benchtime=20000x
+-count=5`. The allocation and heap rows were re-measured at `main` @ `8063374`
+(post-#36); the withheld ns/op figures were taken at `main` @ `c44b685`. Reproduce with `make bench-h2h` (add `-count=5` for
 stable numbers). Absolute ns/op and heap figures vary by machine, Go version, and
 thermal state — **the ratios and the shape are the point**, not reproducing these
 exact integers.
 
 | Benchmark | Processor | Metric | Value |
 |---|---|---|---|
-| `BenchmarkBufferBytes` | Astriena | **heap B/trace** | **~3409** |
-| | stock `tail_sampling` | **heap B/trace** | **~3444** |
-| | | **ratio (stock / Astriena)** | **~1.00×** |
-| `BenchmarkConsume` | Astriena | throughput | ~4006 ns/op, 3935 B/op, 62 allocs/op |
-| | stock `tail_sampling` | throughput | ~5647 ns/op, 4915 B/op, 82 allocs/op |
-| | | **ingest latency ratio (stock / Astriena)** | **~1.4×** |
+| `BenchmarkBufferBytes` | Astriena | **heap B/trace** | **~3430–3510** |
+| | stock `tail_sampling` | **heap B/trace** | **~3345–3510** |
+| | | **ratio (stock / Astriena)** | **~0.97–1.02×** (a tie within noise) |
+| `BenchmarkConsume` | Astriena | allocations | 3983 B/op, 63 allocs/op |
+| | stock `tail_sampling` | allocations | 4914 B/op, 82 allocs/op |
+| | | **allocation ratio (stock / Astriena)** | **~1.30× allocs, ~1.23× bytes** |
+| | | ingest latency ratio | pending re-measurement (see note) |
 
 Earlier runs on the same machine (pre lock-striping, PR #12 era) showed ~2.25×
 ingest advantage (~2061 vs ~4636 ns/op). That gap narrowed after **64-stripe lock
@@ -197,22 +230,28 @@ wins under concurrent load.
 
 ### What the ratio means (and does not)
 
-At the processor boundary, in-flight heap is a **tie**. The README / architecture
-claim of "a fraction of the memory of the stock processor" is **not supported**
-by this run: Astriena's adapter holds a domain `Span` *and* a per-trace pdata
+At the processor boundary, in-flight heap is a **tie**. The former README /
+architecture claim of "a fraction of the memory of the stock processor" was
+**not supported** by this run — and has since been removed from both documents in
+favor of the ingestion-reduction and ingest-allocation claims. Astriena's adapter
+holds a domain `Span` *and* a per-trace pdata
 snapshot (`toEngineSpans`), and that dual representation lands at essentially
-the same `HeapInuse` as stock's own copies + `idToTrace` map. The memory wedge
-(~1.00×) is unchanged post-striping.
+the same `HeapInuse` as stock's own copies + `idToTrace` map. The memory ratio
+(~0.97–1.02×) is unchanged post-striping.
 
-The isolation engine bookkeeping (~120–180 B/trace) is ~5% of the ~3400 B
+The isolation engine bookkeeping (~210–230 B/trace) is ~6% of the ~3450 B
 adapter-level figure. The payload the exporter will write dominates both sides.
 A 1024-trace smoke sample can invert the ratio (heap noise); it stabilizes
 near 1.00× by 20 000 traces.
 
-Ingest is where Astriena is ahead today: on representative runs, about **~1.4×**
-lower `ConsumeTraces` latency and fewer allocs (62 vs 82). Do not cite the older
-~2.25× figure without noting hardware and pre-striping context — ratios vary by
-machine and run. That is the public API, with the async-vs-sync caveat above.
+Ingest is where Astriena is ahead today, and the durable part of that is
+allocation cost: **63 vs 82 allocs/op** and **~3983 vs ~4914 B/op** — counts
+reproduce exactly run to run, bytes to within a byte. Wall-clock latency has measured lower as well, but
+every recorded ns/op ratio here predates the #36 index and was taken on hardware
+that is no longer trusted for timing — do not cite the single-thread ~1.4× (or
+the older ~2.25×) as a current ratio until the re-run in the timings note lands.
+The historical figures above and the caveated concurrent ratio column below are
+labelled as such.
 
 Lock-striping / smarter eviction (landed in #8, striping refined in #16) target
 mutex contention and cap behavior under concurrent ingest, not this memory ratio.
@@ -266,28 +305,35 @@ Representative local run on **Apple M4** (10 cores), `main`, `-benchtime=20000x
 numbers). Absolute figures vary by machine — **the shape across worker counts
 and the stock/Astriena ratio at each N are the point**.
 
+> **The ns/op and ratio columns below share the timings caveat above** — they
+> predate the #36 index and were taken on hardware no longer trusted for timing.
+> The allocs/op column is deterministic; B/op drifts by a few bytes run to run.
+> Both are current.
+
 | Workers | Processor | ns/op (median) | B/op | allocs/op | stock / Astriena |
 |---:|---|---:|---:|---:|---:|
-| 1 | Astriena | ~15 000 | ~6560 | 103 | — |
+| 1 | Astriena | ~15 000 | ~6610 | 104 | — |
 | 1 | stock | ~16 400 | ~7540 | 123 | ~1.1× |
-| 4 | Astriena | ~6900 | ~6560 | 103 | — |
+| 4 | Astriena | ~6900 | ~6610 | 104 | — |
 | 4 | stock | ~5600 | ~7540 | 123 | ~0.8× |
-| 8 | Astriena | ~5100 | ~6560 | 103 | — |
+| 8 | Astriena | ~5100 | ~6610 | 104 | — |
 | 8 | stock | ~5000 | ~7540 | 123 | ~1.0× |
-| 10 (NumCPU) | Astriena | ~5800 | ~6560 | 103 | — |
+| 10 (NumCPU) | Astriena | ~5800 | ~6610 | 104 | — |
 | 10 (NumCPU) | stock | ~8400 | ~7540 | 123 | ~1.4× |
 
 **Clone overhead.** Each parallel iteration **clones** the batch before
 rewriting the trace id (see methodology above). That adds ~41 allocs/op versus
-single-thread `BenchmarkConsume` (103 vs 62) and dominates at **workers=1** (~15k
-ns/op here vs ~6.5k in `BenchmarkConsume/{astriena}`). Both processors pay the
-same clone, so cross-processor ratios remain fair.
+the single-thread `BenchmarkConsume` figures (104 vs 63), and dominates at
+**workers=1**, where there is no contention for it to hide behind. Both
+processors pay the same
+clone, so cross-processor ratios remain fair.
 
 **Scaling shape.** As workers increase, **aggregate ns/op falls** on both sides
 — parallel ingest amortizes per-call work. At **4–8 workers** on this machine,
 stock's async `workChan` loop keeps pace with Astriena (ratios near 1.0×); the
-single-thread ~1.4× ingest gap **narrows or inverts** at moderate concurrency.
-At **NumCPU (10)**, Astriena pulls ahead again (~1.4×) while stock's tail is
+single-thread ingest advantage **narrows or inverts** at moderate concurrency.
+At **NumCPU (10)**, Astriena pulls ahead again, by a margin pending
+re-measurement, while stock's tail is
 noisy (workChan backpressure and event-loop batching vary run-to-run).
 
 **How to read this.** The bench proves concurrent load can be measured
@@ -297,3 +343,13 @@ Use **workers=1** concurrent numbers only for apples-to-apples clone-inclusive
 comparison; use **single-thread `BenchmarkConsume`** for per-call ingest cost
 without clone. Re-run after engine or adapter changes that touch locking or
 ingest paths.
+
+## Open observation: `pendingOrder` is unconditional
+
+`Engine.ingestSpan` pushes every new trace onto `pendingOrder` regardless of
+configuration. With `MaxTraces = 0` (unlimited) `evictOldestPendingLocked` can
+never run, so that node — one allocation and ~48 B per buffered trace, about a
+quarter of engine bookkeeping — is maintained for a list that nothing reads. Guarding
+the push on `cfg.MaxTraces > 0` would restore the pre-#36 ~161 B/trace figure for
+unlimited buffers at no cost to the capped path. Not yet implemented; noted here
+because it is the reason the isolation numbers moved.

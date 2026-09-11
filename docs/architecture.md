@@ -6,12 +6,18 @@
 
 ## Positioning
 
-> **A focused OpenTelemetry distribution with a sampling engine that uses a
-> fraction of the memory of the stock processor — none of the plugin bloat.**
+> **A focused OpenTelemetry distribution that cuts trace egress ~80% at the
+> source, with a framework-free sampling engine — none of the plugin bloat.**
 
 Astriena speaks OTLP in, applies dynamic tail sampling, and writes the kept
 telemetry into the customer's **own** ClickHouse cluster (Bring Your Own Storage).
 Data never touches Astriena's infrastructure.
+
+The claim above is the measured one: **ingestion reduction**. Per-call ingest is
+also cheaper in allocations than the stock processor, a figure that reproduces
+run to run. Adapter-level in-flight heap is a **tie**, so memory is not sold as
+an advantage. See [`benchmarks.md`](benchmarks.md) for the figures, the
+engine-side bookkeeping cost, and the caveats on timings.
 
 ## Shape: a custom Collector distribution with a pure core
 
@@ -28,11 +34,12 @@ adds two custom components:
 ### Why a distro (and why it doesn't blunt the wedge)
 
 The Collector's reputation for being heavy is about the giant *contrib* binary's
-plugin sprawl and the stock `tail_sampling` processor's memory behavior — **not**
-the framework core. A custom distro compiles in only what we ship, so it stays
-small. The memory wedge lives in the **sampling engine**, which we write
-ourselves — so building on the Collector buys us production-grade OTLP/backpressure
-plumbing for free without giving up the differentiator. (Full trade-off analysis:
+plugin sprawl and the stock `tail_sampling` processor's decision-loop design —
+**not** the framework core. A custom distro compiles in only what we ship, so it
+stays small. The differentiator lives in the **sampling engine** — what it drops
+before egress, and what each ingested trace costs — which we write ourselves, so
+building on the Collector buys us production-grade OTLP/backpressure plumbing for
+free without giving up that differentiator. (Full trade-off analysis:
 the private strategy doc.)
 
 ## The hexagonal rule: keep the core pure
@@ -66,7 +73,7 @@ Keeping the core pure is deliberate: it lets us swap the surrounding framework,
 extract a standalone binary, or reimplement the hot path in another language
 without rewriting the sampling logic — and it lets us benchmark the engine in
 isolation (see [`benchmarks.md`](benchmarks.md), which establishes the baseline
-the memory/reduction claims rest on before any hot-path optimization).
+the reduction and ingest-cost claims rest on before any hot-path optimization).
 
 ## Deferred: a possible Rust hot path
 
@@ -84,7 +91,7 @@ scale — a data-driven trigger, not a speculative one.
 - **Not worth it until measured.** Two toolchains and a smaller contributor pool
   for that component are real costs; adopt Rust only against evidence. The
   adapter-level head-to-head in [`benchmarks.md`](benchmarks.md) does **not**
-  show Go losing on in-flight heap vs stock (`~1.00×`); do not start a rewrite
+  show Go losing on in-flight heap vs stock; do not start a rewrite
   on the back of those numbers.
 
 ## Repository layout
