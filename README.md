@@ -59,6 +59,35 @@ metric catalog and suggested alerts.
 > and produces a runnable binary. The pure core (`make test`) builds offline with
 > no OTel dependency.
 
+### Run from GHCR
+
+Release images are published to `ghcr.io/rockbox37/astriena` (tag matches the
+GitHub release, e.g. `v0.1.0`). OTLP listens on `:4317` (gRPC) and `:4318` (HTTP);
+self-metrics on `:8888/metrics` — see [docs/observability.md](docs/observability.md).
+
+```sh
+make clickhouse-up   # or use your own cluster
+
+docker run -d --name astriena \
+  --platform linux/amd64 \   # required on Apple Silicon (image is amd64-only for now)
+  -p 4317:4317 -p 4318:4318 -p 8888:8888 \
+  -e ASTRIENA_CLICKHOUSE_DSN=clickhouse://host.docker.internal:9000/astriena \
+  ghcr.io/rockbox37/astriena:v0.1.0
+```
+
+On Docker Desktop, `host.docker.internal` reaches ClickHouse on the host (e.g.
+after `make clickhouse-up`). The exporter creates the database on connect;
+`make clickhouse-bootstrap` is optional for local Docker.
+
+Minimal smoke after the container starts:
+
+```sh
+curl -s localhost:8888/metrics | head
+curl -s -X POST localhost:4318/v1/traces \
+  -H 'Content-Type: application/json' -d '{"resourceSpans":[]}'
+# tail sampling waits decision_wait (5s in config.yaml) before counters move
+```
+
 ## Status
 
 Early stage — scaffolding in place, core engine under construction. The pure
