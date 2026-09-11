@@ -35,13 +35,13 @@ Tracking issue: see GitHub issue **v0.2.0 roadmap** (label `milestone`).
 
 ## P1 — should ship
 
-### 2. O(1) pending index for MaxTraces eviction
+### 2. O(1) pending index for MaxTraces eviction ✅
 
-**Why:** `evictOldestPendingLocked` walks the arrival-ordered list front-to-back until it finds a `DecisionPending` trace ([`engine.go`](../internal/sampling/engine.go)). When the buffer holds many decided-but-not-yet-removed traces at the front (sink retry holding `DecisionSampled`, or traces waiting expiry), eviction degrades toward O(n) per admission under cap pressure.
+**Why:** `evictOldestPendingLocked` previously walked the arrival-ordered list front-to-back until it found a `DecisionPending` trace ([`engine.go`](../internal/sampling/engine.go)). When the buffer held many decided-but-not-yet-removed traces at the front (sink retry holding `DecisionSampled`, or traces waiting expiry), eviction degraded toward O(n) per admission under cap pressure.
 
 **Deliverables:**
-- Secondary index (e.g. pending-only doubly-linked list or cursor) so oldest Pending is reachable in O(1).
-- Regression tests for cap pressure with mixed Pending / Sampled-held / decided traces at list head.
+- Secondary index (`pendingOrder` — pending-only doubly-linked list) so oldest Pending is reachable in O(1). **Shipped.**
+- Regression tests for cap pressure with mixed Pending / Sampled-held / decided traces at list head. **Shipped.**
 - Re-run isolation + concurrent benches after the change.
 
 ### 3. ClickHouse integration tests in CI
